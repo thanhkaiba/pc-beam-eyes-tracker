@@ -15,7 +15,7 @@ datas += collect_data_files("mediapipe")
 binaries = collect_dynamic_libs("mediapipe")
 
 a = Analysis(
-    [os.path.join(root, "headtrack_pc", "__main__.py")],
+    [os.path.join(root, "launcher.py")],
     pathex=[root],
     binaries=binaries,
     datas=datas,

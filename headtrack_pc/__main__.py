@@ -1,5 +1,5 @@
 import sys
 
-from .cli import main
+from headtrack_pc.cli import main
 
 sys.exit(main())
