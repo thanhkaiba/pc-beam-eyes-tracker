@@ -38,13 +38,15 @@ git clone <this repo> && cd pc-beam-eyes-tracker
 python -m venv .venv ; .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
 python tools\fetch_models.py           # MediaPipe face_landmarker.task (Apache 2.0, ~3.7 MB)
-python tools\fetch_opentrack_libs.py   # NPClient*.dll, freetrackclient*.dll, TrackIR.exe from the opentrack 2026.1.0 release (ISC)
+python tools\fetch_opentrack_libs.py   # NPClient*.dll, freetrackclient*.dll, TrackIR.exe from opentrack's repo (sha256-pinned)
 python -m unittest discover -s tests -t .
 python -m headtrack_pc                 # the window;  python -m headtrack_pc --cli  for a console view
 ```
 
-`scripts\build.ps1` does all of the above and builds `dist\HeadTrackPC\HeadTrackPC.exe` with
-PyInstaller. On Linux/macOS everything but the game output works (useful for development and for
+`scripts\build.ps1` does all of the above and builds `dist\HeadTrackPC\HeadTrackPC.exe` (window) and
+`HeadTrackPC-console.exe` (console, for `--cli`) with PyInstaller. The GitHub Actions workflow
+`.github/workflows/windows.yml` runs the same on a Windows runner, including a round trip through
+the real `NPClient64.dll` / `freetrackclient64.dll`, and uploads `HeadTrackPC-windows.zip`. On Linux/macOS everything but the game output works (useful for development and for
 the UDP output to an opentrack).
 
 ## Use

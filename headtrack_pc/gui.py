@@ -450,5 +450,17 @@ class HeadTrackWindow:
 
 
 def run_gui(profile: TrackingProfile, profile_path: Optional[str] = None) -> int:
-    app = App(profile, profile_path)
-    return HeadTrackWindow(app).run()
+    import logging
+    import traceback
+    try:
+        app = App(profile, profile_path, log=logging.getLogger("headtrack").info)
+        return HeadTrackWindow(app).run()
+    except Exception:
+        text = traceback.format_exc()
+        logging.getLogger("headtrack").error(text)
+        try:
+            from tkinter import messagebox
+            messagebox.showerror("HeadTrack PC", f"HeadTrack PC could not start:\n\n{text}")
+        except Exception:
+            print(text, file=sys.stderr)
+        return 1

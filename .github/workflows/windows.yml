@@ -1,0 +1,52 @@
+name: windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy
+      - run: python -m unittest discover -s tests -t . -v
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -r requirements-dev.txt
+      - name: Fetch model and opentrack client DLLs
+        run: |
+          python tools/fetch_models.py
+          python tools/fetch_opentrack_libs.py
+      - name: Unit tests (incl. real NPClient64.dll / freetrackclient64.dll round trip)
+        run: python -m unittest discover -s tests -t . -v
+      - name: CLI smoke (phone source, game output on)
+        run: python -m headtrack_pc --cli --source phone --duration 3 --calibrate-after 0
+      - name: CLI smoke (webcam source; no camera on the runner, must fail gracefully)
+        run: python -m headtrack_pc --cli --source webcam --duration 3 --calibrate-after 0
+      - name: GUI smoke (Tk window, fake camera, game output on)
+        run: python tools/gui_smoke.py --game-output
+      - name: Build exe (PyInstaller)
+        run: pyinstaller --noconfirm headtrack-pc.spec
+      - name: Run the built exe
+        run: |
+          .\dist\HeadTrackPC\HeadTrackPC-console.exe --version
+          .\dist\HeadTrackPC\HeadTrackPC-console.exe --cli --source phone --duration 3 --calibrate-after 0
+      - name: Package
+        run: Compress-Archive -Path dist\HeadTrackPC -DestinationPath HeadTrackPC-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HeadTrackPC-windows
+          path: HeadTrackPC-windows.zip

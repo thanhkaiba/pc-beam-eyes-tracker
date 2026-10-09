@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Opens the window with a fake camera, calibrates, visits every tab, presses every Apply, closes.
+Exit code 0 when the centre step completed and the tabs appeared. Needs a display (Xvfb on Linux)."""
+from __future__ import annotations
+
+import os
+import sys
+import threading
+import time
+from dataclasses import replace
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import headtrack_pc.app as appmod  # noqa: E402
+from headtrack_pc.app import App  # noqa: E402
+from headtrack_pc.engine import CalibrationPhase  # noqa: E402
+from headtrack_pc.gui import HeadTrackWindow  # noqa: E402
+from headtrack_pc.inputs.base import Frame, PoseSource, SourceStatus  # noqa: E402
+from headtrack_pc.pose import HeadPose  # noqa: E402
+from headtrack_pc.profile import DRIVING, OutputSettings, PhoneSettings  # noqa: E402
+
+
+class FakeCam(PoseSource):
+    def __init__(self, settings, **kw):
+        self.status = SourceStatus.STOPPED
+        self.error = None
+        self._stop = threading.Event()
+
+    def start(self, cb):
+        self.status = SourceStatus.RUNNING
+
+        def run():
+            t = 0
+            while not self._stop.is_set():
+                t += 1
+                now = time.monotonic_ns()
+                cb(Frame(HeadPose(5.0 + 0.01 * (t % 2), -10.0, 1.0, 0, 0, -45, timestamp_nanos=now), now))
+                time.sleep(0.033)
+        threading.Thread(target=run, daemon=True).start()
+
+    def stop(self):
+        self._stop.set()
+        self.status = SourceStatus.STOPPED
+
+    def preview(self):
+        return None
+
+
+def main() -> int:
+    appmod.WebcamSource = FakeCam
+    game_output = "--game-output" in sys.argv
+    prof = replace(DRIVING, phone=PhoneSettings(track_port=24242, discovery_port=24244),
+                   output=OutputSettings(freetrack_enabled=game_output, udp_enabled=True, udp_host="127.0.0.1", udp_port=24243))
+    app = App(prof, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "smoke-profile.json"))
+    win = HeadTrackWindow(app)
+    app.start()
+    result = {"ok": False, "log": []}
+
+    def step1():
+        result["log"].append(("status", win.status_var.get(), win.centre_hint.get()))
+        app.calibrate()
+
+    def step2():
+        st = app.engine.state
+        result["log"].append(("calibration", st.calibration.value, st.calibration_message, win.tabs.winfo_ismapped()))
+        result["ok"] = st.calibration is CalibrationPhase.DONE and bool(win.tabs.winfo_ismapped())
+        win.tabs.select(win.advanced_tab)
+        win._apply_tuning(); win._apply_output(); win._apply_camera(); win._apply_name()
+        win.tabs.select(win.connect_tab)
+        win.tabs.select(win.track_tab)
+
+    def step3():
+        result["log"].append(("connect", win.pc_var.get(), win.phone_var.get()))
+        result["log"].append(("diag", win.diag_var.get()))
+        result["log"].append(("outputs", win.output_notes.get()))
+        win.close()
+
+    win.root.after(800, step1)
+    win.root.after(5500, step2)
+    win.root.after(6500, step3)
+    win.root.mainloop()
+    for line in result["log"]:
+        print(line)
+    print("GUI SMOKE", "OK" if result["ok"] else "FAILED")
+    return 0 if result["ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

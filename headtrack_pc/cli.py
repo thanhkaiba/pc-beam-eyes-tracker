@@ -6,6 +6,7 @@ the GUI toolkit is unavailable.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from dataclasses import replace
@@ -86,8 +87,25 @@ def run_cli(args) -> int:
     return 0
 
 
+def setup_logging() -> str:
+    """Logs to <config dir>/headtrack.log (and stderr in --cli); returns the log path."""
+    import logging
+    import logging.handlers
+    path = os.path.join(prof.config_dir(), "headtrack.log")
+    try:
+        os.makedirs(prof.config_dir(), exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(path, maxBytes=512_000, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(handler)
+        logging.getLogger().setLevel(logging.INFO)
+    except OSError:
+        pass
+    return path
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    setup_logging()
     if args.cli:
         return run_cli(args)
     try:

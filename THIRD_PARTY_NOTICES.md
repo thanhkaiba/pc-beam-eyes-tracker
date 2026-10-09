@@ -6,8 +6,10 @@
 module (shared-memory layout from `freetrackclient/fttypes.h`, registry keys, game table lookup
 from `csv/csv.cpp`). `data/games.csv` is opentrack's `settings/facetracknoir supported games.csv`.
 `tools/fetch_opentrack_libs.py` downloads `NPClient.dll`, `NPClient64.dll`, `freetrackclient.dll`,
-`freetrackclient64.dll` and `TrackIR.exe` from the opentrack 2026.1.0 release into
-`headtrack_pc/libs/`; those binaries are redistributed unchanged.
+`freetrackclient64.dll` and `TrackIR.exe` from the opentrack repository's `bin/` directory (tag
+opentrack-2026.1.0, SHA-256 pinned) into `headtrack_pc/libs/`; those binaries are redistributed
+unchanged. `NPClient*.dll` is built from opentrack's `contrib/npclient/npclient.c`, written by
+uglyDwarf of the linuxtrack project (MIT licence) as credited there.
 
 Copyright (c) 2012-2026 Stanislaw Halik and opentrack contributors; freetrackclient types loosely
 translated from the FreeTrack project's Delphi sources by Wim Vriend and Ron Hendriks.
