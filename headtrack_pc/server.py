@@ -9,8 +9,16 @@ No authentication: the server binds to localhost only unless the user changes th
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class _Server(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second listener take the same port silently (no conflict
+    # error), so leave it off there; on POSIX it only shortens TIME_WAIT after a restart.
+    allow_reuse_address = sys.platform != "win32"
+    daemon_threads = True
 from typing import Callable, Dict, Optional
 
 DEFAULT_PORT = 4245
@@ -92,8 +100,7 @@ class StateServer:
                     self._send(404, b"not found", "text/plain")
 
         try:
-            self._server = ThreadingHTTPServer((self.bind, self.port), Handler)
-            self._server.daemon_threads = True
+            self._server = _Server((self.bind, self.port), Handler)
         except OSError as e:
             self.error = f"Local API port {self.port} unavailable: {e}"
             return
