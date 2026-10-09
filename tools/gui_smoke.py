@@ -47,6 +47,10 @@ class FakeCam(PoseSource):
 
 
 def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # degree signs on the Windows console
+    except Exception:
+        pass
     appmod.WebcamSource = FakeCam
     game_output = "--game-output" in sys.argv
     prof = replace(DRIVING, phone=PhoneSettings(track_port=24242, discovery_port=24244),
@@ -60,8 +64,14 @@ def main() -> int:
         result["log"].append(("status", win.status_var.get(), win.centre_hint.get()))
         app.calibrate()
 
+    deadline = {"t": time.monotonic() + 25.0}
+
     def step2():
         st = app.engine.state
+        # slow runners: wait for the centre step to finish (3 s countdown + 1 s sampling) instead of a fixed delay
+        if st.calibration in (CalibrationPhase.COUNTDOWN, CalibrationPhase.SAMPLING, CalibrationPhase.IDLE) and time.monotonic() < deadline["t"]:
+            win.root.after(200, step2)
+            return
         result["log"].append(("calibration", st.calibration.value, st.calibration_message, win.tabs.winfo_ismapped()))
         result["ok"] = st.calibration is CalibrationPhase.DONE and bool(win.tabs.winfo_ismapped())
         win.tabs.select(win.advanced_tab)
@@ -82,8 +92,14 @@ def main() -> int:
         win.close()
 
     win.root.after(800, step1)
-    win.root.after(5500, step2)
-    win.root.after(8500, step3)
+    win.root.after(4500, step2)
+    win.root.after(4800, lambda: step3_when_ready())
+
+    def step3_when_ready():
+        if "sweep" not in [l[0] for l in result["log"]] and any(l[0] == "tuning" for l in result["log"]):
+            win.root.after(2500, step3)  # ~2.5 s into the sweep: the yaw-right phase
+        else:
+            win.root.after(300, step3_when_ready)
     win.root.mainloop()
     for line in result["log"]:
         print(line)
