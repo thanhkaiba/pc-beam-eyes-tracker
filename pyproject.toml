@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "headtrack-pc"
+version = "0.1.0"
+description = "Webcam or phone head tracking that feeds Windows games directly (freetrack/TrackIR), no opentrack needed"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["mediapipe>=0.10.30", "opencv-python>=4.9", "numpy>=1.26"]
+
+[project.optional-dependencies]
+dev = ["py7zr>=0.21", "pyinstaller>=6.6"]
+
+[project.scripts]
+headtrack-pc = "headtrack_pc.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["headtrack_pc*"]
+
+[tool.setuptools.package-data]
+headtrack_pc = ["models/*.task", "libs/*.dll", "libs/*.exe", "libs/NOTICE.txt"]

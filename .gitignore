@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+/headtrack_pc/models/*.task
+/headtrack_pc/libs/*.dll
+/headtrack_pc/libs/*.exe
+/headtrack_pc/libs/NOTICE.txt
+/build/
+/dist/
+*.spec.bak
+/.venv/
+/venv/
