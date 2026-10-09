@@ -19,8 +19,11 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional
 
 from . import protocol
+from . import sim
+from .autocentre import AutoCentre
 from .calibration import CalibrationResult
 from .faceloss import FaceLossHandler, TrackingState
+from .gaze import CompensationResult, EyeAssist, GazeCompensationCalibrator, GazeReading, GazeSource, estimate as estimate_gaze
 from .inputs.base import Frame, PoseSource, SourceStatus
 from .pipeline import PipelineSnapshot, TrackingPipeline
 from .pose import NEUTRAL, HeadPose
@@ -69,7 +72,15 @@ class EngineState:
     calibration_message: str = ""
     output_errors: Dict[str, str] = field(default_factory=dict)
     game_name: str = ""
+    game_id: int = 0
     last_frame_nanos: int = 0
+    eye_yaw_degrees: float = 0.0
+    gaze: Optional[GazeReading] = None
+    auto_centre_active: bool = False
+    sweep: Optional[sim.SweepPosition] = None
+    sweep_progress: float = 0.0
+    gaze_calibration_progress: float = -1.0   # -1 = not running
+    gaze_calibration_message: str = ""
 
 
 class _Cmd:
@@ -83,6 +94,14 @@ class TrackingEngine:
         self._clock = clock
         self.pipeline = TrackingPipeline(replace(profile, neutral_pose=None))  # the centre is set every launch
         self._phone_hold = FaceLossHandler(profile.face_loss)
+        self._eye = EyeAssist(profile.eye_assist)
+        self._auto = AutoCentre(profile.auto_centre)
+        self._gaze_cal = GazeCompensationCalibrator()
+        self._gaze_cal_message = ""
+        self._last_gaze: Optional[GazeReading] = None
+        self._sweep_start: Optional[int] = None
+        self._sweep_pos: Optional[sim.SweepPosition] = None
+        self._sweep_progress = 0.0
         self._queue: "queue.Queue" = queue.Queue(maxsize=256)
         self._outputs: List[Output] = []
         self._sources: Dict[SourceKind, PoseSource] = {}
@@ -91,6 +110,7 @@ class TrackingEngine:
         self._state = EngineState()
         self._state_lock = threading.Lock()
         self._listeners: List[Callable[[EngineState], None]] = []
+        self._profile_listeners: List[Callable[[TrackingProfile], None]] = []
         self._calib_phase = CalibrationPhase.IDLE
         self._calib_started = 0
         self._calib_message = ""
@@ -166,6 +186,42 @@ class TrackingEngine:
             self.profile = p
             self.pipeline.update_profile(p)
             self._phone_hold.update_settings(p.face_loss)
+            self._eye.update(p.eye_assist)
+            self._auto.update_settings(p.auto_centre)
+        self._queue.put(_Cmd(do))
+
+    # --- direction check: scripted sweep replaces the camera for ~25 s ------------------------
+    def start_sweep(self) -> None:
+        def do():
+            if not self.pipeline.is_calibrated:
+                self.pipeline.apply_calibration(NEUTRAL)
+            self._sweep_start = self._clock()
+            self._sweep_pos = None
+            self._sweep_progress = 0.0
+        self._queue.put(_Cmd(do))
+
+    def stop_sweep(self) -> None:
+        def do():
+            self._sweep_start = None
+            self._sweep_pos = None
+            self._sweep_progress = 0.0
+        self._queue.put(_Cmd(do))
+
+    @property
+    def sweeping(self) -> bool:
+        return self._sweep_start is not None
+
+    # --- eye-assist head compensation calibration ----------------------------------------------
+    def start_gaze_calibration(self) -> None:
+        def do():
+            self._gaze_cal.begin(self._clock())
+            self._gaze_cal_message = "Look at the centre of the screen and slowly turn your head left and right"
+        self._queue.put(_Cmd(do))
+
+    def cancel_gaze_calibration(self) -> None:
+        def do():
+            self._gaze_cal.cancel()
+            self._gaze_cal_message = ""
         self._queue.put(_Cmd(do))
 
     def calibrate(self) -> None:
@@ -217,13 +273,20 @@ class TrackingEngine:
         except queue.Full:
             pass  # drop: the newest frame will follow
 
+    def add_profile_listener(self, fn: Callable[[TrackingProfile], None]) -> None:
+        """Called on the worker when the engine itself changes the profile (gaze compensation result)."""
+        self._profile_listeners.append(fn)
+
     def _run(self) -> None:
         idle = 1.0 / max(1, self.profile.output.idle_resend_rate_hz)
         while not self._stop.is_set():
             try:
-                item = self._queue.get(timeout=idle)
+                item = self._queue.get(timeout=(1 / 60.0) if self._sweep_start is not None else idle)
             except queue.Empty:
-                self._tick()
+                if self._sweep_start is not None:
+                    self._sweep_tick(self._clock())
+                else:
+                    self._tick()
                 continue
             if isinstance(item, _Cmd):
                 try:
@@ -252,17 +315,79 @@ class TrackingEngine:
                 self._send(out, frame.pose, now, SourceKind.PHONE)
             return
         # webcam
+        if self._sweep_start is not None:
+            return  # the direction check drives the outputs; camera frames are ignored meanwhile
         self._latency_ms = frame.latency_ms
         self._advance_calibration(now)
-        snap = self.pipeline.process(frame.pose, now)
+        raw = frame.pose
+        if raw is not None and raw.is_finite and not self.pipeline.is_calibrating:
+            drifted = self._auto.update(raw, self.pipeline.neutral, now)
+            if drifted is not None:
+                self.pipeline.drift_neutral(drifted)
+        else:
+            self._auto.update(None, self.pipeline.neutral, now)
+        snap = self.pipeline.process(raw, now)
+        face = raw is not None and raw.is_finite
+        gaze = estimate_gaze(frame.eyes, self.profile.camera.mirrored, now) if (frame.eyes is not None and face) else None
+        self._last_gaze = gaze
+        head_yaw = snap.calibrated.yaw if snap.calibrated is not None else float("nan")
+        self._advance_gaze_calibration(gaze, head_yaw, now)
+        eye_active = face and snap.is_calibrated and snap.state is TrackingState.TRACKING and not self._gaze_cal.running
+        out = self._eye.apply(snap.output, gaze, eye_active, now, head_yaw)
         if self._phone_fresh(now):
             self._publish(snap, SourceKind.PHONE)  # preview only; the phone drives the outputs
             return
+        self._send(out, snap.raw, now, SourceKind.WEBCAM, snap)
+
+    def _advance_gaze_calibration(self, gaze: Optional[GazeReading], head_yaw: float, now: int) -> None:
+        cal = self._gaze_cal
+        if not cal.running:
+            return
+        if gaze is not None:
+            src = self.profile.eye_assist.source
+            cal.add(head_yaw, gaze.blend_horizontal if src is GazeSource.MODEL else gaze.iris_horizontal, gaze.eyes_open)
+        if cal.elapsed(now):
+            r: CompensationResult = cal.finish()
+            if r.ok:
+                ea = replace(self.profile.eye_assist, head_compensation=True, compensation_scale=r.scale,
+                             compensation_bias=r.bias, compensation_source=self.profile.eye_assist.source)
+                self.profile = replace(self.profile, eye_assist=ea)
+                self._eye.update(ea)
+                self._gaze_cal_message = f"Compensation set (scale {r.scale:.3f}/°, fit r²={r.r2:.2f}, {r.samples} frames)"
+                for fn in self._profile_listeners:
+                    try:
+                        fn(self.profile)
+                    except Exception:
+                        pass
+            else:
+                self._gaze_cal_message = r.failure.value if r.failure else "Calibration failed"
+
+    def _sweep_tick(self, now: int) -> bool:
+        """Drives the direction-check poses through the real pipeline; True while the sweep runs."""
+        start = self._sweep_start
+        if start is None:
+            return False
+        seconds = (now - start) / 1e9
+        centre = self.pipeline.neutral or NEUTRAL
+        raw = sim.pose_at(seconds, centre, now)
+        if raw is None:
+            self._sweep_start = None
+            self._sweep_pos = None
+            self._sweep_progress = 1.0
+            snap = self.pipeline.process(centre.with_time(now), now)
+            self._send(snap.output, snap.raw, now, SourceKind.WEBCAM, snap)
+            return False
+        self._sweep_pos = sim.position_at(seconds)
+        self._sweep_progress = sim.progress(seconds)
+        snap = self.pipeline.process(raw, now)
         self._send(snap.output, snap.raw, now, SourceKind.WEBCAM, snap)
+        return True
 
     def _tick(self) -> None:
         now = self._clock()
         self._advance_calibration(now)
+        if self._gaze_cal.running:
+            self._advance_gaze_calibration(None, float("nan"), now)
         if self._phone_fresh(now):
             return
         if self._last_phone_nanos:
@@ -273,7 +398,7 @@ class TrackingEngine:
                 self._send(out, None, now, SourceKind.PHONE)
                 return
         if self._sources.get(SourceKind.WEBCAM) is not None and self.pipeline.is_calibrated:
-            out = self.pipeline.tick(now)
+            out = self._eye.apply(self.pipeline.tick(now), None, False, now)
             self._send(out, None, now, SourceKind.WEBCAM)
         else:
             self._publish(None)
@@ -299,6 +424,10 @@ class TrackingEngine:
         flags = protocol.FLAG_TRACKING_VALID if (raw is not None) else 0
         if self.pipeline.is_calibrated or source is SourceKind.PHONE:
             flags |= protocol.FLAG_CALIBRATED
+        if self._sweep_start is not None:
+            flags |= protocol.FLAG_SIMULATED
+        if self._eye.yaw_degrees != 0.0:
+            flags |= protocol.FLAG_EYE_ASSIST
         errors: Dict[str, str] = {}
         for o in self._outputs:
             try:
@@ -320,8 +449,12 @@ class TrackingEngine:
             if self._calib_phase is CalibrationPhase.COUNTDOWN:
                 seconds_left = max(0.0, self.profile.calibration.countdown_millis / 1000.0 - (now - self._calib_started) / 1e9)
             game = ""
+            game_id = 0
             for o in self._outputs:
                 game = getattr(o, "game_name", "") or game
+                game_id = getattr(o, "game_id", 0) or game_id
+            if game_id < 0:
+                game_id = 0
             self._state = EngineState(
                 raw=snap.raw if snap else prev.raw,
                 calibrated=snap.calibrated if snap else prev.calibrated,
@@ -345,7 +478,15 @@ class TrackingEngine:
                 calibration_message=self._calib_message,
                 output_errors=errors if errors is not None else prev.output_errors,
                 game_name=game,
+                game_id=game_id,
                 last_frame_nanos=self._fps_window[-1] if self._fps_window else prev.last_frame_nanos,
+                eye_yaw_degrees=self._eye.yaw_degrees,
+                gaze=self._last_gaze,
+                auto_centre_active=self._auto.active,
+                sweep=self._sweep_pos,
+                sweep_progress=self._sweep_progress if self._sweep_start is not None else 0.0,
+                gaze_calibration_progress=self._gaze_cal.progress(now) if self._gaze_cal.running else -1.0,
+                gaze_calibration_message=self._gaze_cal_message,
             )
             state = self._state
         for fn in self._listeners:

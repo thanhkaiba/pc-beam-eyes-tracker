@@ -14,17 +14,25 @@ from dataclasses import replace
 from tkinter import ttk
 from typing import Dict, Optional
 
+import math
+
 from . import __version__
 from . import protocol
+from . import sim
 from .app import App
+from .autocentre import AutoCentreSettings
 from .engine import CalibrationPhase, EngineState
 from .faceloss import TrackingState
 from .filters import FilterType
+from .gaze import EyeAssistSettings, GazeSource
+from .hotkeys import HotkeySettings, parse_key
 from .inputs.base import SourceStatus
 from .mapping import AxisSettings, ResponseCurve
 from .net.discovery import local_ipv4_addresses
 from .pose import Axis, HeadPose
 from .profile import FreetrackInterface, SourceKind, TrackingProfile
+from .profiles import PRESETS
+from .selfcheck import CheckResult
 
 POLL_MS = 50
 PREVIEW_MS = 66
@@ -45,6 +53,8 @@ class HeadTrackWindow:
         self.root.minsize(640, 520)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._preview_image = None
+        self._last_tuning_label = ""
+        self._last_check_time = 0.0
         self._centre_done = False
         self._last_state: Optional[EngineState] = None
         self._axis_vars: Dict[str, Dict[str, tk.Variable]] = {}
@@ -114,7 +124,55 @@ class HeadTrackWindow:
             ttk.Label(grid, textvariable=self.live_vars[k], font=("Courier", 10)).grid(row=i, column=1, sticky="w")
         self.game_var = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.game_var, foreground="#262").pack(anchor="w", pady=(8, 0))
+        self.auto_var = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.auto_var, foreground="#666").pack(anchor="w")
+        # Direction check: a cockpit that moves like a driving game's camera, driven by the pose being sent.
+        box = ttk.LabelFrame(f, text="Direction check (what the game should do)", padding=6)
+        box.pack(fill="x", pady=(8, 0))
+        self.cockpit = tk.Canvas(box, width=360, height=180, bg="#9ec5e8", highlightthickness=0)
+        self.cockpit.pack()
+        self.cockpit_words = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.cockpit_words).pack(anchor="w")
+        row = ttk.Frame(box)
+        row.pack(fill="x", pady=2)
+        self.sweep_btn = ttk.Button(row, text="Sweep each axis (25 s)", command=self._toggle_sweep)
+        self.sweep_btn.pack(side="left")
+        self.sweep_var = tk.StringVar(value="Sends yaw right/left, pitch up/down, roll right/left one at a time through the real pipeline: watch the game follow. Reversed axis → Invert it in Advanced → Tuning.")
+        ttk.Label(row, textvariable=self.sweep_var, wraplength=420, justify="left").pack(side="left", padx=8)
         return f
+
+    def _toggle_sweep(self) -> None:
+        if self.app.engine.sweeping:
+            self.app.engine.stop_sweep()
+        else:
+            self.app.engine.start_sweep()
+
+    def _draw_cockpit(self, st: EngineState) -> None:
+        cam = sim.camera(st.output)
+        c = self.cockpit
+        w, h = 360, 180
+        c.delete("all")
+        cx, cy = w / 2 + cam.pan_x * w, h / 2 + cam.pan_y * h
+        ang = math.radians(cam.roll_degrees)
+        cos_a, sin_a = math.cos(ang), math.sin(ang)
+
+        def rot(x, y):
+            return cx + (x * cos_a - y * sin_a) * cam.zoom, cy + (x * sin_a + y * cos_a) * cam.zoom
+        # far scene: sky/ground split by the horizon, a road converging to the vanishing point
+        far = [rot(-700, 0), rot(700, 0), rot(700, 600), rot(-700, 600)]
+        c.create_polygon(*[v for p in far for v in p], fill="#5b8c3a", outline="")
+        c.create_polygon(*[v for p in [rot(-40, 0), rot(40, 0), rot(360, 600), rot(-360, 600)] for v in p], fill="#555", outline="")
+        c.create_line(*rot(0, 0), *rot(0, 600), fill="#eee", dash=(8, 8), width=2)
+        for x in (-220, -120, 120, 220):
+            c.create_rectangle(*rot(x - 10, -60), *rot(x + 10, 0), fill="#8a6", outline="")
+        # near cockpit (dashboard, pillars, mirrors) moves with parallax and does not roll with the world
+        px, py = cam.parallax_x * w, cam.parallax_y * h
+        c.create_rectangle(0 + px, h * 0.72 + py, w + px, h + py, fill="#2b2b2b", outline="")
+        c.create_rectangle(-20 + px, 0 + py, 30 + px, h + py, fill="#1e1e1e", outline="")
+        c.create_rectangle(w - 30 + px, 0 + py, w + 20 + px, h + py, fill="#1e1e1e", outline="")
+        c.create_rectangle(w * 0.42 + px, 6 + py, w * 0.58 + px, 26 + py, fill="#111", outline="#888")
+        c.create_oval(w * 0.3 + px, h * 0.6 + py, w * 0.7 + px, h * 1.3 + py, outline="#777", width=6)
+        self.cockpit_words.set("Looking at: " + cam.words)
 
     def _build_connect(self, parent) -> ttk.Frame:
         f = ttk.Frame(parent, padding=12)
@@ -203,10 +261,18 @@ class HeadTrackWindow:
         # Tuning
         box = ttk.LabelFrame(f, text="Tuning (same meaning as the Android app)", padding=8)
         box.pack(fill="x", pady=4)
+        self.tuning_for = tk.StringVar(value=self.app.tuning_label())
+        ttk.Label(box, textvariable=self.tuning_for, wraplength=560, justify="left", foreground="#262").grid(row=10, column=0, columnspan=7, sticky="w", pady=(0, 4))
+        prow = ttk.Frame(box)
+        prow.grid(row=11, column=0, columnspan=7, sticky="w", pady=(0, 6))
+        ttk.Label(prow, text="Preset:").pack(side="left")
+        for key, preset in PRESETS.items():
+            ttk.Button(prow, text=preset.name, command=lambda k=key: self._apply_preset(k)).pack(side="left", padx=3)
+        ttk.Label(prow, text="Games switch to their own tuning when they connect (driving / flight preset first).", foreground="#666", wraplength=330, justify="left").pack(side="left", padx=8)
         hdr = ("Axis", "On", "Sensitivity", "Dead zone", "Max", "Curve", "Invert")
         for c, h in enumerate(hdr):
-            ttk.Label(box, text=h, font=("", 9, "bold")).grid(row=0, column=c, padx=4)
-        for r, axis in enumerate(Axis, start=1):
+            ttk.Label(box, text=h, font=("", 9, "bold")).grid(row=12, column=c, padx=4)
+        for r, axis in enumerate(Axis, start=13):
             s: AxisSettings = p.mapping.get(axis)
             vars_ = {
                 "enabled": tk.BooleanVar(value=s.enabled), "sensitivity": tk.StringVar(value=f"{s.sensitivity:g}"),
@@ -222,7 +288,7 @@ class HeadTrackWindow:
             ttk.Combobox(box, textvariable=vars_["curve"], values=[c.name for c in ResponseCurve], width=9, state="readonly").grid(row=r, column=5)
             ttk.Checkbutton(box, variable=vars_["inverted"]).grid(row=r, column=6)
         row = ttk.Frame(box)
-        row.grid(row=8, column=0, columnspan=7, sticky="w", pady=4)
+        row.grid(row=20, column=0, columnspan=7, sticky="w", pady=4)
         ttk.Label(row, text="Smoothing:").pack(side="left")
         self.smooth_type = tk.StringVar(value=p.smoothing.type.name)
         ttk.Combobox(row, textvariable=self.smooth_type, values=[t.name for t in FilterType], width=12, state="readonly").pack(side="left", padx=4)
@@ -232,13 +298,73 @@ class HeadTrackWindow:
         ttk.Button(row, text="Apply tuning", command=self._apply_tuning).pack(side="left", padx=8)
         ttk.Button(row, text="Driving defaults", command=self._reset_tuning).pack(side="left")
         self.tuning_msg = tk.StringVar(value="")
-        ttk.Label(box, textvariable=self.tuning_msg, foreground="#a33").grid(row=9, column=0, columnspan=7, sticky="w")
+        ttk.Label(box, textvariable=self.tuning_msg, foreground="#a33").grid(row=21, column=0, columnspan=7, sticky="w")
+
+        # Automatic centre + hotkeys
+        box = ttk.LabelFrame(f, text="Recenter", padding=8)
+        box.pack(fill="x", pady=4)
+        self.auto_centre_var = tk.BooleanVar(value=p.auto_centre.enabled)
+        ttk.Checkbutton(box, text="Automatic centre: when you sit still for 2 s within 12° of the centre, the centre drifts to your resting pose (no jump, never while looking aside)",
+                        variable=self.auto_centre_var, command=self._apply_recenter).pack(anchor="w")
+        row = ttk.Frame(box)
+        row.pack(anchor="w", pady=2)
+        self.hotkey_var = tk.BooleanVar(value=p.hotkeys.enabled)
+        ttk.Checkbutton(row, text="Recenter hotkey (works inside the game):", variable=self.hotkey_var, command=self._apply_recenter).pack(side="left")
+        self.hotkey_key = tk.StringVar(value=p.hotkeys.recenter_key)
+        ttk.Entry(row, textvariable=self.hotkey_key, width=10).pack(side="left", padx=4)
+        ttk.Label(row, text="wheel/joystick").pack(side="left", padx=(8, 2))
+        self.joy_id = tk.StringVar(value=str(p.hotkeys.joystick_id))
+        ttk.Spinbox(row, from_=-1, to=15, textvariable=self.joy_id, width=4).pack(side="left")
+        ttk.Label(row, text="button").pack(side="left", padx=(6, 2))
+        self.joy_btn = tk.StringVar(value=str(p.hotkeys.joystick_button))
+        ttk.Spinbox(row, from_=-1, to=31, textvariable=self.joy_btn, width=4).pack(side="left")
+        ttk.Button(row, text="Apply", command=self._apply_recenter).pack(side="left", padx=6)
+        self.hotkey_msg = tk.StringVar(value="Keys: F1–F24, A–Z, 0–9, Space, Home, End, Insert, Pause, Numpad0/5. Joystick -1 = none; buttons count from 0.")
+        ttk.Label(box, textvariable=self.hotkey_msg, foreground="#666", wraplength=560, justify="left").pack(anchor="w")
+
+        # Eye-assisted look
+        box = ttk.LabelFrame(f, text="Eye-assisted look (experimental)", padding=8)
+        box.pack(fill="x", pady=4)
+        ttk.Label(box, wraplength=560, justify="left", text=(
+            "A sideways glance adds yaw on top of the head pose, so you can check a mirror without turning your head "
+            "away from the screen. Horizontal only. Costs some CPU (eye model).")).pack(anchor="w")
+        row = ttk.Frame(box)
+        row.pack(anchor="w", pady=2)
+        self.eye_var = tk.BooleanVar(value=p.eye_assist.enabled)
+        ttk.Checkbutton(row, text="On", variable=self.eye_var, command=self._apply_eye).pack(side="left")
+        ttk.Label(row, text="source").pack(side="left", padx=(8, 2))
+        self.eye_source = tk.StringVar(value=p.eye_assist.source.name)
+        ttk.Combobox(row, textvariable=self.eye_source, values=[g.name for g in GazeSource], width=7, state="readonly").pack(side="left")
+        ttk.Label(row, text="dead zone").pack(side="left", padx=(8, 2))
+        self.eye_dead = tk.StringVar(value=f"{p.eye_assist.dead_zone:g}")
+        ttk.Entry(row, textvariable=self.eye_dead, width=5).pack(side="left")
+        ttk.Label(row, text="gain °").pack(side="left", padx=(8, 2))
+        self.eye_gain = tk.StringVar(value=f"{p.eye_assist.gain_degrees:g}")
+        ttk.Entry(row, textvariable=self.eye_gain, width=5).pack(side="left")
+        ttk.Label(row, text="max °").pack(side="left", padx=(8, 2))
+        self.eye_max = tk.StringVar(value=f"{p.eye_assist.max_degrees:g}")
+        ttk.Entry(row, textvariable=self.eye_max, width=5).pack(side="left")
+        ttk.Button(row, text="Apply", command=self._apply_eye).pack(side="left", padx=6)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", pady=2)
+        self.eye_comp = tk.BooleanVar(value=p.eye_assist.head_compensation)
+        ttk.Checkbutton(row, text="Head-turn compensation (one screen: the eyes counter-rotate while the head turns)", variable=self.eye_comp, command=self._apply_eye).pack(side="left")
+        ttk.Button(row, text="Calibrate (6 s)", command=self.app.engine.start_gaze_calibration).pack(side="left", padx=6)
+        self.eye_msg = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.eye_msg, wraplength=560, justify="left").pack(anchor="w")
 
         # Diagnostics
         box = ttk.LabelFrame(f, text="Diagnostics", padding=8)
         box.pack(fill="x", pady=4)
+        self.check_headline = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.check_headline, font=("", 10, "bold")).pack(anchor="w")
+        self.check_rows = ttk.Frame(box)
+        self.check_rows.pack(fill="x")
+        self._check_widgets: Dict[str, tuple] = {}
+        self.fix_msg = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.fix_msg, foreground="#262", wraplength=560, justify="left").pack(anchor="w")
         self.diag_var = tk.StringVar(value="")
-        ttk.Label(box, textvariable=self.diag_var, font=("Courier", 9), justify="left").pack(anchor="w")
+        ttk.Label(box, textvariable=self.diag_var, font=("Courier", 9), justify="left").pack(anchor="w", pady=(6, 0))
         ttk.Button(box, text="Copy report", command=self._copy_report).pack(anchor="w", pady=2)
         steam_line = f" {self.steam.status.message}." if self.steam is not None else ""
         ttk.Label(f, foreground="#666", wraplength=560, justify="left", text=(
@@ -303,17 +429,53 @@ class HeadTrackWindow:
         self.tuning_msg.set("")
         self.app.update_profile(replace(p, mapping=mapping, smoothing=smoothing))
 
-    def _reset_tuning(self) -> None:
-        from .profile import DRIVING
+    def _apply_preset(self, key: str) -> None:
+        self.app.apply_preset(key)
+        self._load_tuning_fields()
+
+    def _load_tuning_fields(self) -> None:
         p = self.app.profile
-        self.app.update_profile(replace(p, mapping=DRIVING.mapping, smoothing=DRIVING.smoothing))
         for axis in Axis:
-            s = DRIVING.mapping.get(axis)
+            s = p.mapping.get(axis)
             v = self._axis_vars[axis.name]
             v["enabled"].set(s.enabled); v["sensitivity"].set(f"{s.sensitivity:g}"); v["dead_zone"].set(f"{s.dead_zone:g}")
             v["max_output"].set(f"{s.max_output:g}"); v["curve"].set(s.curve.name); v["inverted"].set(s.inverted)
-        self.smooth_type.set(DRIVING.smoothing.type.name)
-        self.smooth_strength.set(f"{DRIVING.smoothing.strength:g}")
+        self.smooth_type.set(p.smoothing.type.name)
+        self.smooth_strength.set(f"{p.smoothing.strength:g}")
+        self.tuning_for.set(self.app.tuning_label())
+
+    def _apply_recenter(self) -> None:
+        p = self.app.profile
+        key = self.hotkey_key.get().strip()
+        if self.hotkey_var.get() and key and parse_key(key) is None:
+            self.hotkey_msg.set(f"Unknown key '{key}'. Use F1–F24, A–Z, 0–9, Space, Home, End, Insert, Pause.")
+            return
+        try:
+            jid, jbtn = int(self.joy_id.get()), int(self.joy_btn.get())
+        except ValueError:
+            jid, jbtn = -1, -1
+        self.app.update_profile(replace(p, auto_centre=replace(p.auto_centre, enabled=bool(self.auto_centre_var.get())),
+                                        hotkeys=HotkeySettings(enabled=bool(self.hotkey_var.get()), recenter_key=key or "F12",
+                                                               joystick_id=jid, joystick_button=jbtn)))
+        self.hotkey_msg.set("Applied." + (f" {self.app.hotkeys.error}" if self.app.hotkeys.error else ""))
+
+    def _apply_eye(self) -> None:
+        p = self.app.profile
+        try:
+            ea = replace(p.eye_assist, enabled=bool(self.eye_var.get()), source=GazeSource[self.eye_source.get()],
+                         dead_zone=float(self.eye_dead.get().replace(",", ".")), gain_degrees=float(self.eye_gain.get().replace(",", ".")),
+                         max_degrees=float(self.eye_max.get().replace(",", ".")), head_compensation=bool(self.eye_comp.get()))
+        except (ValueError, KeyError) as e:
+            self.eye_msg.set(f"Check the numbers: {e}")
+            return
+        self.app.update_profile(replace(p, eye_assist=ea))
+        self.eye_msg.set("Applied. The camera restarts with the eye model when turning this on or off.")
+
+    def _run_fix(self, action: str) -> None:
+        self.fix_msg.set(self.app.run_fix(action))
+
+    def _reset_tuning(self) -> None:
+        self._apply_preset("driving")
 
     def _copy_report(self) -> None:
         self.root.clipboard_clear()
@@ -388,6 +550,26 @@ class HeadTrackWindow:
             self.centre_skip.pack_forget()
 
     def _update_track(self, st: EngineState) -> None:
+        self._draw_cockpit(st)
+        if st.sweep is not None:
+            self.sweep_btn.configure(text="Stop sweep")
+            self.sweep_var.set(f"{st.sweep.phase.label}: {st.sweep.phase.expect}  ({st.sweep_progress * 100:.0f} %)")
+        else:
+            self.sweep_btn.configure(text="Sweep each axis (25 s)")
+            if self.sweep_var.get().endswith("%)"):
+                self.sweep_var.set("Sweep finished. Every direction right? Then you are set. Reversed axis → Invert it in Advanced → Tuning.")
+        auto = "Automatic centre: adjusting to your resting pose…" if st.auto_centre_active else ""
+        if st.eye_yaw_degrees:
+            auto = (auto + "  " if auto else "") + f"Eye-assisted look adds {st.eye_yaw_degrees:+.0f}° yaw"
+        self.auto_var.set(auto)
+        if self._last_tuning_label != self.app.tuning_label():
+            self._last_tuning_label = self.app.tuning_label()
+            self._load_tuning_fields()
+        if st.gaze_calibration_progress >= 0:
+            self.eye_msg.set(f"Calibrating head-turn compensation: look at the screen centre and slowly turn your head left and right… {st.gaze_calibration_progress * 100:.0f} %")
+        elif st.gaze_calibration_message and self.eye_msg.get().startswith("Calibrating"):
+            self.eye_msg.set(st.gaze_calibration_message)
+            self.eye_comp.set(self.app.profile.eye_assist.head_compensation)
         self.live_vars["raw"].set(_fmt(st.raw))
         self.live_vars["calibrated"].set(_fmt(st.calibrated) if st.has_neutral else "set the centre first")
         self.live_vars["output"].set(_fmt(st.output))
@@ -421,13 +603,44 @@ class HeadTrackWindow:
                                f"{s.pings} pings answered, {s.discoveries} searches answered. "
                                + ("Fresh: the phone drives the game." if st.phone_fresh else "Stale: the webcam drives the game."))
 
+    def _update_checks(self) -> None:
+        import time as _t
+        if _t.monotonic() - self._last_check_time < 1.0:
+            return
+        self._last_check_time = _t.monotonic()
+        report = self.app.self_check()
+        self.check_headline.set(report.headline)
+        colours = {CheckResult.PASS: "#262", CheckResult.WARN: "#a60", CheckResult.FAIL: "#a33", CheckResult.SKIP: "#888"}
+        marks = {CheckResult.PASS: "✓", CheckResult.WARN: "!", CheckResult.FAIL: "✗", CheckResult.SKIP: "–"}
+        for i, item in enumerate(report.items):
+            if item.id not in self._check_widgets:
+                mark = ttk.Label(self.check_rows, width=2)
+                title = ttk.Label(self.check_rows, width=16, anchor="w")
+                detail = ttk.Label(self.check_rows, wraplength=380, justify="left", anchor="w")
+                fix = ttk.Button(self.check_rows, width=22)
+                mark.grid(row=i, column=0, sticky="nw", padx=2, pady=1)
+                title.grid(row=i, column=1, sticky="nw", pady=1)
+                detail.grid(row=i, column=2, sticky="w", pady=1)
+                self._check_widgets[item.id] = (mark, title, detail, fix)
+            mark, title, detail, fix = self._check_widgets[item.id]
+            mark.configure(text=marks[item.result], foreground=colours[item.result])
+            title.configure(text=item.title)
+            detail.configure(text=item.detail, foreground=colours[item.result])
+            if item.fix:
+                fix.configure(text=item.fix_label or "Fix", command=lambda a=item.fix: self._run_fix(a))
+                fix.grid(row=i, column=3, sticky="ne", padx=4)
+            else:
+                fix.grid_forget()
+
     def _update_diagnostics(self, st: EngineState) -> None:
+        self._update_checks()
         caps = self.app.engine.capabilities()
         lines = [
             f"source={st.active_source.value if st.active_source else '-'} webcam={st.webcam_status.value} phone={st.phone_status.value} fresh={st.phone_fresh}",
             f"frames={st.frames} fps={st.fps:.0f} latency={st.latency_ms:.1f} ms packets_out={st.packets_out} tracking={st.tracking.value}",
             f"centre={'set' if st.has_neutral else 'not set'} calibration={st.calibration.value} {st.calibration_message}",
-            f"capabilities=0x{caps:02x} game_output={'yes' if caps & protocol.CAP_GAME_OUTPUT else 'no'} game={st.game_name or '-'}",
+            f"capabilities=0x{caps:02x} game_output={'yes' if caps & protocol.CAP_GAME_OUTPUT else 'no'} game={st.game_name or '-'} ({st.game_id}) tuning={self.app.profile.name}",
+            f"eye_yaw={st.eye_yaw_degrees:+.1f} auto_centre={'on' if self.app.profile.auto_centre.enabled else 'off'}{' (adjusting)' if st.auto_centre_active else ''} hotkey={self.app.profile.hotkeys.recenter_key if self.app.profile.hotkeys.enabled else 'off'} fired={self.app.hotkeys.fired}",
             f"platform={sys.platform} python={sys.version.split()[0]}",
         ]
         self.diag_var.set("\n".join(lines))

@@ -18,6 +18,12 @@
 | `outputs/freetrack.py` | FT_SharedMem writer (portable) + Windows mapping/mutex/registry/dummy | opentrack `proto-ft` |
 | `outputs/games.py` | game table | opentrack `csv/csv.cpp` |
 | `outputs/udp.py` | opentrack-format sender | `core.net` + `OpenTrackPacket` |
+| `sim.py` | direction-check sweep phases/poses and cockpit camera maths | `core.sim` |
+| `gaze.py` | eye signals from blendshapes/iris landmarks, gaze estimate, eye-assisted look, head-turn compensation calibrator | `core.gaze` |
+| `autocentre.py` | still-pose detection and gradual centre drift (PC only) | — |
+| `hotkeys.py` | key / joystick polling with edge detection; Windows readers via ctypes | — |
+| `profiles.py` | presets (driving, flight, passthrough), game → category table, per-game tuning files | — |
+| `selfcheck.py` / `fixes.py` | diagnostics rows with fix actions (firewall rule, camera privacy, downloads, camera restart) | `core.diagnostics.SelfCheck` |
 | `engine.py` | worker thread, idle resend, calibration phases, phone-over-webcam policy, `EngineState` for the UI | `app.tracking.TrackingEngine` |
 | `app.py` | builds sources/outputs/discovery from the profile; reacts to profile changes | `AppGraph` + `MainViewModel` |
 | `gui.py` / `cli.py` | Tkinter window (centre step → Track / Connect / Advanced) / console | Compose screens |

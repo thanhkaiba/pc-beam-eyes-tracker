@@ -14,6 +14,7 @@ import time
 from typing import Optional
 
 from .. import pose as posemath
+from ..gaze import eye_signals_from_result
 from ..profile import CameraSettings
 from .base import Frame, FrameCallback, PoseSource, SourceStatus
 
@@ -34,8 +35,10 @@ def default_model_path() -> str:
 
 
 class WebcamSource(PoseSource):
-    def __init__(self, settings: CameraSettings, model_path: Optional[str] = None, clock=time.monotonic_ns):
+    def __init__(self, settings: CameraSettings, model_path: Optional[str] = None, clock=time.monotonic_ns,
+                 measure_eyes: bool = False):
         self.settings = settings
+        self.measure_eyes = measure_eyes
         self.model_path = model_path or default_model_path()
         self._clock = clock
         self._stop = threading.Event()
@@ -109,11 +112,17 @@ class WebcamSource(PoseSource):
             landmarks = len(result.face_landmarks[0]) if result.face_landmarks else 0
             submitted = self._submitted.pop(timestamp_ms, None)
             latency = (now - submitted) / 1e6 if submitted else 0.0
+            eyes = None
             if pose is not None:
                 self.frames_tracked += 1
+                if self.measure_eyes and result.face_blendshapes:
+                    try:
+                        eyes = eye_signals_from_result(result.face_blendshapes[0], result.face_landmarks[0] if result.face_landmarks else None)
+                    except Exception:
+                        eyes = None
             cb = self._on_frame
             if cb is not None:
-                cb(Frame(pose, ts_nanos, latency, landmarks))
+                cb(Frame(pose, ts_nanos, latency, landmarks, eyes))
 
         try:
             options = vision.FaceLandmarkerOptions(
@@ -124,7 +133,7 @@ class WebcamSource(PoseSource):
                 min_face_presence_confidence=0.5,
                 min_tracking_confidence=0.5,
                 output_facial_transformation_matrixes=True,
-                output_face_blendshapes=False,
+                output_face_blendshapes=self.measure_eyes,
                 result_callback=on_result,
             )
             self._landmarker = vision.FaceLandmarker.create_from_options(options)

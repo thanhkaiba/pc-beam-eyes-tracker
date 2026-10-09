@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
 
+from ..gaze import EyeSignals
 from ..pose import HeadPose
 
 
@@ -22,6 +23,7 @@ class Frame:
     timestamp_nanos: int
     latency_ms: float = 0.0
     landmarks: int = 0
+    eyes: Optional[EyeSignals] = None
 
 
 FrameCallback = Callable[[Frame], None]

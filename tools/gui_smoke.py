@@ -66,10 +66,16 @@ def main() -> int:
         result["ok"] = st.calibration is CalibrationPhase.DONE and bool(win.tabs.winfo_ismapped())
         win.tabs.select(win.advanced_tab)
         win._apply_tuning(); win._apply_output(); win._apply_camera(); win._apply_name()
+        win._apply_preset("flight"); win._apply_recenter(); win._apply_eye(); win._update_checks()
+        result["log"].append(("tuning", win.tuning_for.get(), win.check_headline.get()))
         win.tabs.select(win.connect_tab)
         win.tabs.select(win.track_tab)
+        win._toggle_sweep()
 
     def step3():
+        result["log"].append(("sweep", win.sweep_var.get(), win.cockpit_words.get(), app.engine.sweeping))
+        result["ok"] = result["ok"] and app.engine.sweeping and "Yaw" in win.sweep_var.get()
+        win._toggle_sweep()
         result["log"].append(("connect", win.pc_var.get(), win.phone_var.get()))
         result["log"].append(("diag", win.diag_var.get()))
         result["log"].append(("outputs", win.output_notes.get()))
@@ -77,7 +83,7 @@ def main() -> int:
 
     win.root.after(800, step1)
     win.root.after(5500, step2)
-    win.root.after(6500, step3)
+    win.root.after(8500, step3)
     win.root.mainloop()
     for line in result["log"]:
         print(line)

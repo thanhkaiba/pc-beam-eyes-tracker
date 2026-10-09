@@ -109,6 +109,11 @@ class TrackingPipeline:
         self._filter.reset()
         self._face_loss.reset()
 
+    def drift_neutral(self, new_neutral: HeadPose) -> None:
+        """Moves the centre without resetting filters or the face-loss state (automatic centre correction)."""
+        self.neutral = new_neutral
+        self.profile = replace(self.profile, neutral_pose=new_neutral)
+
     def recenter(self) -> bool:
         r = self._last_raw
         if r is None:

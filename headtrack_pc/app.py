@@ -1,18 +1,25 @@
 """Builds the engine, sources and outputs from a profile. Used by the GUI and the CLI."""
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import replace
 from typing import Callable, List, Optional
 
+import time
+
+from . import fixes, selfcheck
 from . import profile as prof
-from .engine import TrackingEngine
+from .engine import EngineState, TrackingEngine
+from .hotkeys import HotkeyPoller
+from .inputs.base import SourceStatus
 from .inputs.phone import PhoneSource
 from .inputs.webcam import WebcamSource
 from .net.discovery import DiscoveryResponder, default_pc_name
 from .outputs.freetrack import FreetrackOutput, OutputUnavailable, find_libs_dir
 from .outputs.udp import UdpOutput
 from .profile import SourceKind, TrackingProfile
+from .profiles import PRESETS, ProfileLibrary, category_of, with_tuning
 
 
 class GameOutputAdapter:
@@ -26,6 +33,10 @@ class GameOutputAdapter:
     @property
     def game_name(self) -> str:
         return self.inner.game_name
+
+    @property
+    def game_id(self) -> int:
+        return self.inner.game_id
 
     def write(self, pose, raw=None, flags=0, timestamp_nanos=0):
         self.inner.write(pose, raw)
@@ -53,15 +64,25 @@ class App:
     """Owns the engine and (re)creates sources/outputs when the profile changes."""
 
     def __init__(self, profile: Optional[TrackingProfile] = None, profile_path: Optional[str] = None,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print, library: Optional[ProfileLibrary] = None,
+                 hotkeys: Optional[HotkeyPoller] = None):
         self.profile_path = profile_path
         self.profile = profile if profile is not None else prof.load(profile_path)
         self.profile = replace(self.profile, neutral_pose=None)  # the centre is set every launch
+        # The global (no-game) tuning; `profile` is what the engine runs (a game's tuning once one connects).
+        self.base_profile = self.profile
         self.log = log
         self.engine = TrackingEngine(self.profile)
         self.discovery: Optional[DiscoveryResponder] = None
         self.output_notes: List[str] = []
         self.discovery_error: Optional[str] = None
+        self.library = library or ProfileLibrary(os.path.join(os.path.dirname(profile_path), "games") if profile_path else None)
+        self.active_game_id = 0
+        self.active_game_name = ""
+        self.hotkeys = hotkeys if hotkeys is not None else HotkeyPoller(self.profile.hotkeys, self.recenter)
+        self._webcam_started_at = 0.0
+        self.engine.add_listener(self._on_engine_state)
+        self.engine.add_profile_listener(self._on_engine_profile)
 
     # --- lifecycle ---------------------------------------------------------------------------
     def start(self) -> None:
@@ -69,8 +90,13 @@ class App:
         self.apply_outputs()
         self.apply_sources()
         self.apply_discovery()
+        if self.profile.hotkeys.enabled:
+            self.hotkeys.start()
+            if self.hotkeys.error:
+                self.log(self.hotkeys.error)
 
     def stop(self) -> None:
+        self.hotkeys.stop()
         if self.discovery is not None:
             self.discovery.close()
             self.discovery = None
@@ -107,7 +133,8 @@ class App:
     def apply_sources(self) -> None:
         p = self.profile
         if p.source is SourceKind.WEBCAM:
-            self.engine.set_source(SourceKind.WEBCAM, WebcamSource(p.camera))
+            self._webcam_started_at = time.monotonic()
+            self.engine.set_source(SourceKind.WEBCAM, WebcamSource(p.camera, measure_eyes=p.eye_assist.enabled))
         else:
             self.engine.stop_source(SourceKind.WEBCAM)
         # the phone receiver is always on (so the phone's connect check and discovery work)
@@ -138,15 +165,94 @@ class App:
         self.engine.update_profile(new)
         if new.output != old.output:
             self.apply_outputs()
-        if new.source != old.source or new.camera != old.camera or new.phone.track_port != old.phone.track_port:
+        if (new.source != old.source or new.camera != old.camera or new.phone.track_port != old.phone.track_port
+                or new.eye_assist.enabled != old.eye_assist.enabled):
             self.apply_sources()
         if new.phone != old.phone:
             self.apply_discovery()
+        if new.hotkeys != old.hotkeys:
+            self.hotkeys.update(new.hotkeys)
+            if new.hotkeys.enabled and self.hotkeys._thread is None:
+                self.hotkeys.start()
+        # Global settings always land in the base profile; tuning goes to the active game's file instead.
+        if self.active_game_id > 0:
+            self.base_profile = replace(self.base_profile, **{k: getattr(new, k) for k in ("source", "camera", "output", "phone", "hotkeys", "calibration")})
+        else:
+            self.base_profile = new
         if save:
             try:
-                prof.save(new, self.profile_path)
+                prof.save(self.base_profile, self.profile_path)
+                if self.active_game_id > 0:
+                    self.library.save_for_game(self.active_game_id, new)
             except OSError as e:
                 self.log(f"Could not save profile: {e}")
+
+    # --- per-game tuning -----------------------------------------------------------------------
+    def _on_engine_state(self, st: EngineState) -> None:
+        if st.game_id != self.active_game_id:
+            self.switch_game(st.game_id, st.game_name)
+
+    def _on_engine_profile(self, p: TrackingProfile) -> None:
+        # the engine changed tuning itself (gaze compensation): keep and persist it
+        self.update_profile(replace(self.profile, eye_assist=p.eye_assist))
+
+    def switch_game(self, game_id: int, game_name: str) -> None:
+        """Loads the tuning for the game that just connected (or the base tuning when it closed)."""
+        if game_id > 0:
+            new = self.library.for_game(game_id, game_name, self.profile)
+            self.active_game_id, self.active_game_name = game_id, game_name
+            self.log(f"game connected: {game_name} ({game_id}) → tuning '{new.name}'")
+        else:
+            new = with_tuning(self.profile, self.base_profile, name=self.base_profile.name)
+            self.active_game_id, self.active_game_name = 0, ""
+            self.log("game closed → base tuning")
+        self.update_profile(new, save=False)
+
+    def apply_preset(self, name: str) -> None:
+        preset = PRESETS[name]
+        label = f"{self.active_game_name} ({preset.name})" if self.active_game_id > 0 else preset.name
+        self.update_profile(with_tuning(self.profile, preset, name=label))
+
+    def tuning_label(self) -> str:
+        if self.active_game_id > 0:
+            saved = "saved for this game" if self.library.has_saved(self.active_game_id) else f"{category_of(self.active_game_id)} preset"
+            return f"{self.active_game_name}: {self.profile.name} ({saved}; edits are saved for this game)"
+        return f"No game connected: {self.profile.name} (edits apply to every game without its own tuning)"
+
+    # --- diagnostics --------------------------------------------------------------------------
+    def self_check(self) -> selfcheck.SelfCheckReport:
+        st = self.engine.state
+        phone = self.engine.source(SourceKind.PHONE)
+        stats = getattr(phone, "stats", None)
+        packets = stats.snapshot().packets if stats is not None else 0
+        return selfcheck.run(selfcheck.SelfCheckInput(
+            windows=sys.platform == "win32",
+            webcam_wanted=self.profile.source is SourceKind.WEBCAM,
+            webcam_status=st.webcam_status.value, webcam_error=st.webcam_error,
+            face_detected=st.raw is not None and st.webcam_status is SourceStatus.RUNNING and (time.monotonic_ns() - st.last_frame_nanos) < 1_000_000_000,
+            fps=st.fps,
+            seconds_since_webcam_start=(time.monotonic() - self._webcam_started_at) if self._webcam_started_at else 0.0,
+            has_neutral=st.has_neutral,
+            game_output_wanted=self.profile.output.freetrack_enabled,
+            game_output_active=any(getattr(o, "is_game_output", False) for o in self.engine._outputs),
+            game_output_error=next((n for n in self.output_notes if "NOT active" in n or "failed" in n.lower()), None),
+            libs_present=find_libs_dir() is not None,
+            game_id=st.game_id, game_name=st.game_name,
+            udp_output=self.profile.output.udp_enabled,
+            phone_status=st.phone_status.value, phone_error=st.phone_error, phone_packets=packets, phone_fresh=st.phone_fresh,
+            discovery_on=self.discovery is not None, discovery_error=self.discovery_error,
+            discoveries_answered=self.discovery.answered if self.discovery is not None else 0,
+            firewall_rule_present=fixes.firewall_rule_present(),
+            sweeping=self.engine.sweeping,
+        ))
+
+    def run_fix(self, action: str) -> str:
+        extra = {"retry_camera": lambda: (self.apply_sources(), "Camera restarted")[1]}
+        msg = fixes.run(action, extra)
+        if action == "fetch_libs" and self.profile.output.freetrack_enabled:
+            self.apply_outputs()
+        self.log(f"fix {action}: {msg}")
+        return msg
 
     # --- convenience ---------------------------------------------------------------------------
     def calibrate(self) -> None:

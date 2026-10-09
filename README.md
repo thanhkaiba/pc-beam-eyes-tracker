@@ -34,6 +34,24 @@ integration and SteamPipe files are in `headtrack_pc/steam.py`, `steam/` and `do
   phone-overrides-webcam policy. `app.py` wires it from the profile; `gui.py` (Tkinter) and
   `cli.py` sit on top.
 
+## What it does that opentrack does not
+
+- **No setup**: no input/output/filter plug-ins to pick, no opentrack install; the game output
+  is built in and the centre is set in one click at every launch.
+- **Per-game tuning, automatic**: when a game's DLL connects, its own tuning loads (a *driving*
+  or *flight* preset the first time), and edits made while it runs are saved for that game.
+- **Recenter from inside the game**: a global hotkey (F12 by default) or a wheel/joystick button,
+  plus an automatic centre that follows your resting posture over a long session without ever
+  jumping or reacting to a deliberate look aside.
+- **Direction check**: a cockpit preview that moves like a driving game's camera, and a 25 s
+  one-axis-at-a-time sweep through the real pipeline, so wrong signs are found before the race.
+- **Eye-assisted look** (experimental): a glance toward a mirror adds yaw so the eyes can stay on
+  the screen; optional head-turn compensation calibrated in 6 s.
+- **Diagnostics that say what to do**: camera busy, no face, missing DLLs, game not loading the
+  tracker, phone port taken by opentrack, firewall rule missing, each with a fix button.
+- **Phone or webcam, or both**: the Android app finds this PC by itself, its link is confirmed by
+  pings, and the webcam takes over when the phone stops.
+
 ## Install (Windows, Python 3.10–3.13)
 
 ```powershell

@@ -9,8 +9,11 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from enum import Enum
 from typing import Any, Optional
 
+from .autocentre import AutoCentreSettings
 from .calibration import CalibrationSettings
 from .faceloss import FaceLossSettings
+from .gaze import EyeAssistSettings, GazeSource
+from .hotkeys import HotkeySettings
 from .filters import FilterType, SmoothingSettings
 from .mapping import TRANSLATION_DEFAULT, AxisSettings, MappingSettings, ResponseCurve
 from .pose import HeadPose
@@ -71,6 +74,9 @@ class TrackingProfile:
     camera: CameraSettings = CameraSettings()
     output: OutputSettings = OutputSettings()
     phone: PhoneSettings = PhoneSettings()
+    eye_assist: EyeAssistSettings = EyeAssistSettings()
+    auto_centre: AutoCentreSettings = AutoCentreSettings()
+    hotkeys: HotkeySettings = HotkeySettings()
     neutral_pose: Optional[HeadPose] = None
 
 
@@ -145,13 +151,16 @@ _TYPES = {
     "smoothing": SmoothingSettings, "type": FilterType, "face_loss": FaceLossSettings,
     "calibration": CalibrationSettings, "camera": CameraSettings, "output": OutputSettings,
     "freetrack_interface": FreetrackInterface, "phone": PhoneSettings, "neutral_pose": HeadPose,
-    "source": SourceKind,
+    "source": SourceKind, "eye_assist": EyeAssistSettings, "gaze_source": GazeSource,
+    "compensation_source": GazeSource, "auto_centre": AutoCentreSettings, "hotkeys": HotkeySettings,
 }
 
 
 def _field_type(cls: Any, name: str) -> Any:
     for f in fields(cls):
         if f.name == name:
+            if cls is EyeAssistSettings and name == "source":
+                return GazeSource
             if name in _TYPES:
                 return _TYPES[name]
             t = f.type
