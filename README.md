@@ -6,10 +6,13 @@ itself. It is the PC counterpart of the Android app (`android-beam-eyes-tracker`
 convention, same calibration, mapping and smoothing, same packet formats. The phone can send to
 it instead of to opentrack, and the Connect tab on the phone finds this PC by itself.
 
-**Status (2026-10-09):** library, engine, protocols and the game-output logic are implemented with
-68 unit/loopback tests passing on Linux (the layout of the shared memory is checked byte by byte
-against opentrack's `fttypes.h`). **Nothing has run on a Windows PC with a webcam or a game yet.**
-The two things only a Windows PC can verify are listed in `docs/test-report.md`.
+**Status (2026-10-09):** library, engine, protocols and the game output are implemented; 82 tests
+pass (68 portable + 6 Windows-only + 8 Steam) and the GitHub Actions `windows` job is green: on a
+Windows runner, opentrack's real `NPClient64.dll` and `freetrackclient64.dll` read our pose back
+correctly, the Tk window completes the centre step with a fake camera, PyInstaller builds
+`HeadTrackPC.exe` and the built exe runs. **Not yet run: a real webcam, a real game and a phone
+over Wi-Fi** (runners have none of them); see `docs/test-report.md`. Optional Steamworks
+integration and SteamPipe files are in `headtrack_pc/steam.py`, `steam/` and `docs/steam.md`.
 
 ## How it fits together
 

@@ -29,7 +29,23 @@ That folder is the Steam depot content; `HeadTrackPC.exe` is the launch option.
 - MediaPipe model and library: Apache 2.0, notice kept.
 - PyInstaller: GPL with the bootloader exception, so a bundled closed-source app is allowed.
 
+## In-app Steamworks integration (`headtrack_pc/steam.py`)
+When `steam_api64.dll` sits next to `HeadTrackPC.exe` (the upload script copies it there) the app
+calls `SteamAPI_RestartAppIfNecessary` (so a launch outside Steam is redirected through Steam),
+`SteamAPI_InitFlat`/`SteamAPI_Init`, shows "Steam connected as <name>" in Advanced → About, pumps
+`SteamAPI_RunCallbacks` every 100 ms (overlay), and calls `SteamAPI_Shutdown` on exit. Without the
+DLL nothing changes. `--no-steam` disables it. For local testing put `steam_appid.txt` with your
+App ID next to the exe; the upload script deletes that file so it never ships.
+
+## Upload (`scripts/steam_upload.ps1`)
+1. Fill `YOUR_APP_ID` / `YOUR_DEPOT_ID` in `steam/app_build.vdf` and `steam/depot_build.vdf`.
+2. Set `STEAMWORKS_SDK` to the unzipped SDK folder (needs `tools\ContentBuilder\builder\steamcmd.exe`
+   and `redistributable_bin\win64\steam_api64.dll`).
+3. `.\scripts\build.ps1` then `.\scripts\steam_upload.ps1 -Username <login>`; set the build live
+   in Steamworks → SteamPipe → Builds. `steam/installscript.vdf` installs the VC++ runtime from
+   Steam's common redistributables (add "Visual C++ 2022 Redist" to the depot in Steamworks).
+
 ## Not done here
-Steamworks app ID, depot/build scripts (`app_build.vdf`), store assets, code signing (unsigned
-exes trigger SmartScreen outside Steam; inside Steam this is less of an issue), and an installer
-are outside this repository.
+Steamworks app ID and depot creation, store assets, code signing (unsigned exes trigger
+SmartScreen outside Steam; inside Steam this is less of an issue), and an installer are outside
+this repository. Nothing Steam-related has run against the real SDK (not redistributable here).
