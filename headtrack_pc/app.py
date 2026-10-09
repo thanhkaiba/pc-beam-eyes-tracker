@@ -17,7 +17,9 @@ from .inputs.phone import PhoneSource
 from .inputs.webcam import WebcamSource
 from .net.discovery import DiscoveryResponder, default_pc_name
 from .outputs.freetrack import FreetrackOutput, OutputUnavailable, find_libs_dir
+from .outputs.mouse import MouseMode, MouseOutput
 from .outputs.udp import UdpOutput
+from .server import StateServer
 from .profile import SourceKind, TrackingProfile
 from .profiles import PRESETS, ProfileLibrary, category_of, with_tuning
 
@@ -79,7 +81,10 @@ class App:
         self.library = library or ProfileLibrary(os.path.join(os.path.dirname(profile_path), "games") if profile_path else None)
         self.active_game_id = 0
         self.active_game_name = ""
-        self.hotkeys = hotkeys if hotkeys is not None else HotkeyPoller(self.profile.hotkeys, self.recenter)
+        self.hotkeys = hotkeys if hotkeys is not None else HotkeyPoller(
+            self.profile.hotkeys, self.recenter, on_toggle=self.engine.toggle_pause, on_gaze_warp=self.gaze_warp)
+        self.server: Optional[StateServer] = None
+        self._mouse: Optional[MouseOutput] = None
         self._webcam_started_at = 0.0
         self.engine.add_listener(self._on_engine_state)
         self.engine.add_profile_listener(self._on_engine_profile)
@@ -90,6 +95,7 @@ class App:
         self.apply_outputs()
         self.apply_sources()
         self.apply_discovery()
+        self.apply_api()
         if self.profile.hotkeys.enabled:
             self.hotkeys.start()
             if self.hotkeys.error:
@@ -97,6 +103,9 @@ class App:
 
     def stop(self) -> None:
         self.hotkeys.stop()
+        if self.server is not None:
+            self.server.stop()
+            self.server = None
         if self.discovery is not None:
             self.discovery.close()
             self.discovery = None
@@ -127,6 +136,14 @@ class App:
                 self.output_notes.append(f"UDP output to {out.udp_host}:{out.udp_port} (opentrack format)")
             except OSError as e:
                 self.output_notes.append(f"UDP output failed: {e}")
+        self._mouse = None
+        if self.profile.mouse.mode is not MouseMode.OFF:
+            try:
+                self._mouse = MouseOutput(self.profile.mouse)
+                self.engine.add_output(self._mouse)
+                self.output_notes.append(f"Mouse output: {self.profile.mouse.mode.value}")
+            except RuntimeError as e:
+                self.output_notes.append(f"Mouse output not active: {e}")
         for n in self.output_notes:
             self.log(n)
 
@@ -134,7 +151,7 @@ class App:
         p = self.profile
         if p.source is SourceKind.WEBCAM:
             self._webcam_started_at = time.monotonic()
-            self.engine.set_source(SourceKind.WEBCAM, WebcamSource(p.camera, measure_eyes=p.eye_assist.enabled))
+            self.engine.set_source(SourceKind.WEBCAM, WebcamSource(p.camera, measure_eyes=self._eyes_wanted(p)))
         else:
             self.engine.stop_source(SourceKind.WEBCAM)
         # the phone receiver is always on (so the phone's connect check and discovery work)
@@ -155,6 +172,22 @@ class App:
             self.discovery_error = f"Discovery port {self.profile.phone.discovery_port} unavailable: {e}"
             self.log(self.discovery_error)
 
+    def apply_api(self) -> None:
+        if self.server is not None:
+            self.server.stop()
+            self.server = None
+        a = self.profile.api
+        if not a.enabled:
+            return
+        self.server = StateServer(self.engine.api_state, a.port, a.bind)
+        self.server.start()
+        if self.server.error:
+            self.log(self.server.error)
+
+    def gaze_warp(self) -> None:
+        if self._mouse is not None:
+            self._mouse.warp()
+
     def _discovery_reply(self, nonce: int):
         from . import protocol
         return protocol.encode_discovery_reply(self.profile.phone.track_port, nonce, self.engine.capabilities(), self.pc_name())
@@ -163,10 +196,12 @@ class App:
         old = self.profile
         self.profile = new
         self.engine.update_profile(new)
-        if new.output != old.output:
+        if new.output != old.output or new.mouse.mode != old.mouse.mode:
             self.apply_outputs()
+        if new.api != old.api:
+            self.apply_api()
         if (new.source != old.source or new.camera != old.camera or new.phone.track_port != old.phone.track_port
-                or new.eye_assist.enabled != old.eye_assist.enabled):
+                or self._eyes_wanted(new) != self._eyes_wanted(old)):
             self.apply_sources()
         if new.phone != old.phone:
             self.apply_discovery()
@@ -176,7 +211,7 @@ class App:
                 self.hotkeys.start()
         # Global settings always land in the base profile; tuning goes to the active game's file instead.
         if self.active_game_id > 0:
-            self.base_profile = replace(self.base_profile, **{k: getattr(new, k) for k in ("source", "camera", "output", "phone", "hotkeys", "calibration")})
+            self.base_profile = replace(self.base_profile, **{k: getattr(new, k) for k in ("source", "camera", "output", "phone", "hotkeys", "calibration", "mouse", "api", "screen_gaze")})
         else:
             self.base_profile = new
         if save:
@@ -187,14 +222,25 @@ class App:
             except OSError as e:
                 self.log(f"Could not save profile: {e}")
 
+    @staticmethod
+    def _eyes_wanted(p: TrackingProfile) -> bool:
+        """The eye model runs when any eye feature needs it: eye-assisted look, screen gaze, gaze mouse."""
+        return p.eye_assist.enabled or bool(p.screen_gaze.weights) or p.mouse.mode in (MouseMode.GAZE_FOLLOW, MouseMode.GAZE_HOTKEY)
+
+    def start_screen_calibration(self) -> None:
+        """Needs the eye model: restart the camera with it if it is off, then begin."""
+        if self.engine.source(SourceKind.WEBCAM) is not None and not getattr(self.engine.source(SourceKind.WEBCAM), "measure_eyes", False):
+            self.engine.set_source(SourceKind.WEBCAM, WebcamSource(self.profile.camera, measure_eyes=True))
+        self.engine.start_screen_calibration()
+
     # --- per-game tuning -----------------------------------------------------------------------
     def _on_engine_state(self, st: EngineState) -> None:
         if st.game_id != self.active_game_id:
             self.switch_game(st.game_id, st.game_name)
 
     def _on_engine_profile(self, p: TrackingProfile) -> None:
-        # the engine changed tuning itself (gaze compensation): keep and persist it
-        self.update_profile(replace(self.profile, eye_assist=p.eye_assist))
+        # the engine changed settings itself (gaze compensation, screen calibration): keep and persist
+        self.update_profile(replace(self.profile, eye_assist=p.eye_assist, screen_gaze=p.screen_gaze))
 
     def switch_game(self, game_id: int, game_name: str) -> None:
         """Loads the tuning for the game that just connected (or the base tuning when it closed)."""

@@ -80,11 +80,11 @@ class GazeTest(unittest.TestCase):
     def test_eye_assist_dead_zone_gain_and_fade(self):
         ea = EyeAssist(EyeAssistSettings(enabled=True, dead_zone=0.25, gain_degrees=30, max_degrees=20, smoothing_seconds=0.0))
         open_right = lambda h: __import__("headtrack_pc.gaze", fromlist=["GazeReading"]).GazeReading(h, 0.0, math.nan, math.nan, True, 0)
-        self.assertEqual(ea.target(open_right(0.2)), 0.0)
-        self.assertAlmostEqual(ea.target(open_right(0.625)), 15.0)
-        self.assertEqual(ea.target(open_right(1.0)), 20.0)
-        self.assertEqual(ea.target(None), 0.0)
-        self.assertEqual(EyeAssist(EyeAssistSettings(enabled=False)).target(open_right(1.0)), 0.0)
+        self.assertEqual(ea.target(open_right(0.2)), (0.0, 0.0))
+        self.assertAlmostEqual(ea.target(open_right(0.625))[0], 15.0)
+        self.assertEqual(ea.target(open_right(1.0)), (20.0, 0.0))
+        self.assertEqual(ea.target(None), (0.0, 0.0))
+        self.assertEqual(EyeAssist(EyeAssistSettings(enabled=False)).target(open_right(1.0)), (0.0, 0.0))
         out = ea.apply(HeadPose(10, 0, 0), open_right(1.0), True, 0)
         self.assertEqual(out.yaw, 30.0)
         self.assertEqual(ea.apply(HeadPose(10, 0, 0), open_right(1.0), False, 1).yaw, 10.0)
@@ -100,6 +100,25 @@ class GazeTest(unittest.TestCase):
         self.assertEqual(last.yaw, 0.0)
         with self.assertRaises(ValueError):
             EyeAssistSettings(dead_zone=1.5)
+
+    def test_screen_source_extended_view_both_axes(self):
+        ea = EyeAssist(EyeAssistSettings(enabled=True, source=GazeSource.SCREEN, dead_zone=0.2, gain_degrees=30, max_degrees=30,
+                                         gain_degrees_y=15, max_degrees_y=10, smoothing_seconds=0.0))
+        self.assertEqual(ea.target(None, screen=(0.5, 0.5)), (0.0, 0.0))
+        yaw, pitch = ea.target(None, screen=(1.0, 0.0))  # top-right corner: look right and up
+        self.assertAlmostEqual(yaw, 30.0)
+        self.assertAlmostEqual(pitch, 10.0)  # limited by max_degrees_y
+        yaw, pitch = ea.target(None, screen=(0.0, 1.0))
+        self.assertAlmostEqual(yaw, -30.0)
+        self.assertAlmostEqual(pitch, -10.0)
+        self.assertEqual(ea.target(None, screen=None), (0.0, 0.0))
+        out = ea.apply(HeadPose(5, 5, 0), None, True, 0, screen=(0.9, 0.5))
+        self.assertGreater(out.yaw, 5.0)
+        self.assertEqual(out.pitch, 5.0)
+        no_v = EyeAssist(replace(ea.settings, vertical=False))
+        self.assertEqual(no_v.target(None, screen=(0.5, 0.0))[1], 0.0)
+        closed = __import__("headtrack_pc.gaze", fromlist=["GazeReading"]).GazeReading(0, 0, 0, 0, False, 0)
+        self.assertEqual(ea.target(closed, screen=(1.0, 0.0)), (0.0, 0.0))
 
     def test_compensation_calibrator(self):
         cal = GazeCompensationCalibrator(duration_nanos=10, min_samples=10)
@@ -209,6 +228,17 @@ class HotkeyTest(unittest.TestCase):
         keys.down.add(0x7B)
         self.assertFalse(p.poll_once())
         p.start(); p.stop()
+        toggles, warps = [], []
+        q = HotkeyPoller(HotkeySettings(recenter_key="F12", toggle_key="F11", gaze_warp_key="F10", joystick_id=0, toggle_button=1),
+                         lambda: None, keys, joy, on_toggle=lambda: toggles.append(1), on_gaze_warp=lambda: warps.append(1))
+        keys.down = {0x7A}
+        self.assertTrue(q.poll_once())
+        keys.down = {0x79}
+        self.assertTrue(q.poll_once())
+        joy.mask = 1 << 1
+        keys.down = set()
+        self.assertTrue(q.poll_once())
+        self.assertEqual((len(toggles), len(warps)), (2, 1))
 
 
 class ProfilesTest(unittest.TestCase):

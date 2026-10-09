@@ -24,6 +24,7 @@ from .autocentre import AutoCentre
 from .calibration import CalibrationResult
 from .faceloss import FaceLossHandler, TrackingState
 from .gaze import CompensationResult, EyeAssist, GazeCompensationCalibrator, GazeReading, GazeSource, estimate as estimate_gaze
+from .gaze_screen import CalibrationStatus, GazePoint, GazeSmoother, ScreenCalibration, ScreenGazeModel, features as gaze_features
 from .inputs.base import Frame, PoseSource, SourceStatus
 from .pipeline import PipelineSnapshot, TrackingPipeline
 from .pose import NEUTRAL, HeadPose
@@ -81,11 +82,21 @@ class EngineState:
     sweep_progress: float = 0.0
     gaze_calibration_progress: float = -1.0   # -1 = not running
     gaze_calibration_message: str = ""
+    gaze_point: Optional[GazePoint] = None     # calibrated screen gaze (smoothed), None when unknown
+    screen_gaze_quality: str = "not calibrated"
+    screen_calibration: Optional[CalibrationStatus] = None  # while the 9-point calibration runs
+    paused: bool = False
+    eye_pitch_degrees: float = 0.0
 
 
 class _Cmd:
     def __init__(self, fn: Callable[[], None]):
         self.fn = fn
+
+
+def replace_status(st: CalibrationStatus) -> CalibrationStatus:
+    """Copy for the immutable state (the calibration mutates its own instance)."""
+    return CalibrationStatus(st.index, st.total, st.point, st.phase, st.progress, st.collected, st.message)
 
 
 class TrackingEngine:
@@ -102,6 +113,12 @@ class TrackingEngine:
         self._sweep_start: Optional[int] = None
         self._sweep_pos: Optional[sim.SweepPosition] = None
         self._sweep_progress = 0.0
+        self._screen_model: Optional[ScreenGazeModel] = self._model_from_profile(profile)
+        self._screen_cal: Optional[ScreenCalibration] = None
+        self._screen_status: Optional[CalibrationStatus] = None
+        self._gaze_smoother = GazeSmoother()
+        self._gaze_point: Optional[GazePoint] = None
+        self._paused = False
         self._queue: "queue.Queue" = queue.Queue(maxsize=256)
         self._outputs: List[Output] = []
         self._sources: Dict[SourceKind, PoseSource] = {}
@@ -181,6 +198,14 @@ class TrackingEngine:
         self._outputs.clear()
 
     # --- commands (thread-safe, executed on the worker) ---------------------------------------
+    @staticmethod
+    def _model_from_profile(p: TrackingProfile) -> Optional[ScreenGazeModel]:
+        sg = p.screen_gaze
+        if not sg.weights:
+            return None
+        m = ScreenGazeModel(tuple(sg.weights), sg.rmse_x, sg.rmse_y, sg.points)
+        return m if m.valid else None
+
     def update_profile(self, p: TrackingProfile) -> None:
         def do():
             self.profile = p
@@ -188,7 +213,101 @@ class TrackingEngine:
             self._phone_hold.update_settings(p.face_loss)
             self._eye.update(p.eye_assist)
             self._auto.update_settings(p.auto_centre)
+            self._screen_model = self._model_from_profile(p)
+            for o in self._outputs:
+                if hasattr(o, "update_settings") and getattr(o, "name", "") == "mouse":
+                    o.update_settings(p.mouse)
         self._queue.put(_Cmd(do))
+
+    # --- pause (toggle hotkey): outputs hold neutral, nothing else changes ---------------------
+    def toggle_pause(self) -> None:
+        def do():
+            self._paused = not self._paused
+            self._publish(None)
+        self._queue.put(_Cmd(do))
+
+    def set_paused(self, paused: bool) -> None:
+        def do():
+            self._paused = paused
+            self._publish(None)
+        self._queue.put(_Cmd(do))
+
+    # --- screen gaze calibration (9 points; the GUI shows the dots) ----------------------------
+    def start_screen_calibration(self, points=None) -> None:
+        def do():
+            self._screen_cal = ScreenCalibration(points) if points else ScreenCalibration()
+            self._screen_cal.begin(self._clock())
+            self._screen_status = self._screen_cal.status
+            self._publish(None)
+        self._queue.put(_Cmd(do))
+
+    def cancel_screen_calibration(self) -> None:
+        def do():
+            if self._screen_cal is not None:
+                self._screen_cal.cancel()
+                self._screen_status = self._screen_cal.status
+                self._screen_cal = None
+            self._publish(None)
+        self._queue.put(_Cmd(do))
+
+    def clear_screen_calibration(self) -> None:
+        def do():
+            self._screen_model = None
+            self._gaze_point = None
+            self._gaze_smoother.reset()
+            from .profile import ScreenGazeSettings
+            self.profile = replace(self.profile, screen_gaze=ScreenGazeSettings())
+            for fn in self._profile_listeners:
+                try:
+                    fn(self.profile)
+                except Exception:
+                    pass
+            self._publish(None)
+        self._queue.put(_Cmd(do))
+
+    def _advance_screen_gaze(self, frame: Frame, raw: Optional[HeadPose], now: int) -> Optional[GazePoint]:
+        """Runs the calibration (when active) or the model; returns the smoothed gaze point."""
+        f = None
+        if frame.eyes is not None and raw is not None and raw.is_finite:
+            f = gaze_features(frame.eyes, raw, self.profile.camera.mirrored)
+        cal = self._screen_cal
+        if cal is not None:
+            st = cal.update(f, now)
+            self._screen_status = replace_status(st)
+            if not cal.running:
+                self._screen_cal = None
+                if cal.result is not None:
+                    self._screen_model = cal.result
+                    from .profile import ScreenGazeSettings
+                    self.profile = replace(self.profile, screen_gaze=ScreenGazeSettings(
+                        weights=tuple(cal.result.weights), rmse_x=cal.result.rmse_x, rmse_y=cal.result.rmse_y, points=cal.result.points))
+                    self._gaze_smoother.reset()
+                    for fn in self._profile_listeners:
+                        try:
+                            fn(self.profile)
+                        except Exception:
+                            pass
+            return None
+        if self._screen_model is None or f is None:
+            return self._gaze_smoother.update(None) if self._screen_model is not None else None
+        return self._gaze_smoother.update(self._screen_model.predict(f, now))
+
+    def api_state(self) -> Dict:
+        """JSON-ready snapshot for the local HTTP API and the OBS overlay."""
+        st = self.state
+
+        def pose(p: Optional[HeadPose]):
+            return None if p is None else {"yaw": p.yaw, "pitch": p.pitch, "roll": p.roll, "x": p.x, "y": p.y, "z": p.z}
+        g = st.gaze_point
+        return {
+            "version": 1,
+            "tracking": st.tracking.value, "paused": st.paused, "source": st.active_source.value if st.active_source else None,
+            "face": st.raw is not None, "fps": st.fps, "centre_set": st.has_neutral,
+            "raw": pose(st.raw), "centred": pose(st.calibrated), "sent": pose(st.output),
+            "eye_yaw": st.eye_yaw_degrees, "eye_pitch": st.eye_pitch_degrees,
+            "gaze": None if g is None else {"x": g.x, "y": g.y, "on_screen": g.on_screen, "quality": st.screen_gaze_quality},
+            "game": {"id": st.game_id, "name": st.game_name}, "phone_connected": st.phone_fresh,
+        }
 
     # --- direction check: scripted sweep replaces the camera for ~25 s ------------------------
     def start_sweep(self) -> None:
@@ -330,10 +449,18 @@ class TrackingEngine:
         face = raw is not None and raw.is_finite
         gaze = estimate_gaze(frame.eyes, self.profile.camera.mirrored, now) if (frame.eyes is not None and face) else None
         self._last_gaze = gaze
+        self._gaze_point = self._advance_screen_gaze(frame, raw, now)
         head_yaw = snap.calibrated.yaw if snap.calibrated is not None else float("nan")
         self._advance_gaze_calibration(gaze, head_yaw, now)
-        eye_active = face and snap.is_calibrated and snap.state is TrackingState.TRACKING and not self._gaze_cal.running
-        out = self._eye.apply(snap.output, gaze, eye_active, now, head_yaw)
+        eye_active = face and snap.is_calibrated and snap.state is TrackingState.TRACKING and not self._gaze_cal.running and self._screen_cal is None
+        screen = (self._gaze_point.x, self._gaze_point.y) if self._gaze_point is not None else None
+        out = self._eye.apply(snap.output, gaze, eye_active, now, head_yaw, screen)
+        for o in self._outputs:
+            if hasattr(o, "gaze") and self._gaze_point is not None and not self._paused:
+                try:
+                    o.gaze(self._gaze_point.x, self._gaze_point.y)
+                except Exception:
+                    pass
         if self._phone_fresh(now):
             self._publish(snap, SourceKind.PHONE)  # preview only; the phone drives the outputs
             return
@@ -388,6 +515,8 @@ class TrackingEngine:
         self._advance_calibration(now)
         if self._gaze_cal.running:
             self._advance_gaze_calibration(None, float("nan"), now)
+        if self._screen_cal is not None:
+            self._advance_screen_gaze(Frame(None, now), None, now)
         if self._phone_fresh(now):
             return
         if self._last_phone_nanos:
@@ -426,10 +555,15 @@ class TrackingEngine:
             flags |= protocol.FLAG_CALIBRATED
         if self._sweep_start is not None:
             flags |= protocol.FLAG_SIMULATED
-        if self._eye.yaw_degrees != 0.0:
+        if self._eye.yaw_degrees != 0.0 or self._eye.pitch_degrees != 0.0:
             flags |= protocol.FLAG_EYE_ASSIST
+        if self._paused:
+            pose = NEUTRAL.with_time(now)
+            flags &= ~protocol.FLAG_TRACKING_VALID
         errors: Dict[str, str] = {}
         for o in self._outputs:
+            if hasattr(o, "active"):
+                o.active = not self._paused
             try:
                 o.write(pose, raw, flags, now)
             except Exception as e:
@@ -487,6 +621,11 @@ class TrackingEngine:
                 sweep_progress=self._sweep_progress if self._sweep_start is not None else 0.0,
                 gaze_calibration_progress=self._gaze_cal.progress(now) if self._gaze_cal.running else -1.0,
                 gaze_calibration_message=self._gaze_cal_message,
+                gaze_point=self._gaze_point,
+                screen_gaze_quality=self._screen_model.quality if self._screen_model is not None else "not calibrated",
+                screen_calibration=self._screen_status if self._screen_cal is not None or (self._screen_status is not None and self._screen_status.phase in ("done", "failed")) else None,
+                paused=self._paused,
+                eye_pitch_degrees=self._eye.pitch_degrees,
             )
             state = self._state
         for fn in self._listeners:

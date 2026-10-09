@@ -24,6 +24,9 @@
 | `hotkeys.py` | key / joystick polling with edge detection; Windows readers via ctypes | — |
 | `profiles.py` | presets (driving, flight, passthrough), game → category table, per-game tuning files | — |
 | `selfcheck.py` / `fixes.py` | diagnostics rows with fix actions (firewall rule, camera privacy, downloads, camera restart) | `core.diagnostics.SelfCheck` |
+| `gaze_screen.py` | iris + head features → ridge regression → gaze point on the screen; 9-point calibration flow; smoother | — (Beam-style eye tracking) |
+| `server.py` | local HTTP API (`/state.json`) and OBS overlay (`/overlay.html`) | — |
+| `outputs/mouse.py` | head-relative mouse (SendInput) and gaze cursor (SetCursorPos) | opentrack `proto-mouse` |
 | `engine.py` | worker thread, idle resend, calibration phases, phone-over-webcam policy, `EngineState` for the UI | `app.tracking.TrackingEngine` |
 | `app.py` | builds sources/outputs/discovery from the profile; reacts to profile changes | `AppGraph` + `MainViewModel` |
 | `gui.py` / `cli.py` | Tkinter window (centre step → Track / Connect / Advanced) / console | Compose screens |

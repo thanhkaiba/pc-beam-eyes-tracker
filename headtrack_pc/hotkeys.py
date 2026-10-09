@@ -37,6 +37,9 @@ class HotkeySettings:
     joystick_id: int = -1       # -1 = none; 0..15 = winmm joystick index
     joystick_button: int = -1   # -1 = none; 0-based button index
     poll_millis: int = 30
+    toggle_key: str = "F11"     # pause / resume tracking (outputs hold neutral while paused)
+    toggle_button: int = -1
+    gaze_warp_key: str = ""     # warp the cursor to the gaze point (mouse output in gaze_hotkey mode)
 
 
 class EdgeDetector:
@@ -95,9 +98,12 @@ class WindowsJoystickReader(JoystickReader):
 
 class HotkeyPoller:
     def __init__(self, settings: HotkeySettings, on_recenter: Callable[[], None],
-                 keys: Optional[KeyReader] = None, joysticks: Optional[JoystickReader] = None):
+                 keys: Optional[KeyReader] = None, joysticks: Optional[JoystickReader] = None,
+                 on_toggle: Optional[Callable[[], None]] = None, on_gaze_warp: Optional[Callable[[], None]] = None):
         self.settings = settings
         self._on_recenter = on_recenter
+        self._on_toggle = on_toggle
+        self._on_gaze_warp = on_gaze_warp
         self._keys = keys
         self._joy = joysticks
         self._edge = EdgeDetector()
@@ -127,21 +133,39 @@ class HotkeyPoller:
         if not s.enabled:
             return False
         fired = False
-        vk = parse_key(s.recenter_key)
-        if vk is not None and self._keys is not None:
-            try:
-                fired |= self._edge.update("key", self._keys.pressed(vk))
-            except Exception:
-                pass
-        if s.joystick_id >= 0 and s.joystick_button >= 0 and self._joy is not None:
+        mask = 0
+        if s.joystick_id >= 0 and self._joy is not None:
             try:
                 mask = self._joy.buttons(s.joystick_id)
-                fired |= self._edge.update("joy", bool(mask & (1 << s.joystick_button)))
             except Exception:
-                pass
-        if fired:
+                mask = 0
+
+        def key_edge(name: str, key: str) -> bool:
+            vk = parse_key(key)
+            if vk is None or self._keys is None:
+                return False
+            try:
+                return self._edge.update(name, self._keys.pressed(vk))
+            except Exception:
+                return False
+
+        def joy_edge(name: str, button: int) -> bool:
+            if s.joystick_id < 0 or button < 0:
+                return False
+            return self._edge.update(name, bool(mask & (1 << button)))
+
+        if key_edge("key", s.recenter_key) | joy_edge("joy", s.joystick_button):
+            fired = True
             self.fired += 1
             self._on_recenter()
+        if key_edge("toggle_key", s.toggle_key) | joy_edge("toggle_joy", s.toggle_button):
+            fired = True
+            if self._on_toggle is not None:
+                self._on_toggle()
+        if key_edge("warp_key", s.gaze_warp_key):
+            fired = True
+            if self._on_gaze_warp is not None:
+                self._on_gaze_warp()
         return fired
 
     def _run(self) -> None:

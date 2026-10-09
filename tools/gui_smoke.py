@@ -53,7 +53,8 @@ def main() -> int:
         pass
     appmod.WebcamSource = FakeCam
     game_output = "--game-output" in sys.argv
-    prof = replace(DRIVING, phone=PhoneSettings(track_port=24242, discovery_port=24244),
+    from headtrack_pc.profile import ApiSettings  # noqa: E402
+    prof = replace(DRIVING, phone=PhoneSettings(track_port=24242, discovery_port=24244), api=ApiSettings(enabled=True, port=0),
                    output=OutputSettings(freetrack_enabled=game_output, udp_enabled=True, udp_host="127.0.0.1", udp_port=24243))
     app = App(prof, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "smoke-profile.json"))
     win = HeadTrackWindow(app)
@@ -77,6 +78,10 @@ def main() -> int:
         win.tabs.select(win.advanced_tab)
         win._apply_tuning(); win._apply_output(); win._apply_camera(); win._apply_name()
         win._apply_preset("flight"); win._apply_recenter(); win._apply_eye(); win._update_checks()
+        win.api_port.set("24245"); win._apply_api(); win._apply_mouse(); win._apply_extended(); win._fill_games()
+        win.game_search.set("beam"); win._fill_games()
+        result["log"].append(("api", win.api_msg.get(), win.games_list.size()))
+        app.engine.toggle_pause(); app.engine.run_sync(lambda: None); app.engine.toggle_pause()
         result["log"].append(("tuning", win.tuning_for.get(), win.check_headline.get()))
         win.tabs.select(win.connect_tab)
         win.tabs.select(win.track_tab)

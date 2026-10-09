@@ -51,6 +51,28 @@ integration and SteamPipe files are in `headtrack_pc/steam.py`, `steam/` and `do
   tracker, phone port taken by opentrack, firewall rule missing, each with a fix button.
 - **Phone or webcam, or both**: the Android app finds this PC by itself, its link is confirmed by
   pings, and the webcam takes over when the phone stops.
+- **Eye tracking on the screen**: a 9-point calibration gives a gaze point that drives the
+  *extended view*, an OBS streaming overlay, a gaze cursor and a local JSON API; pause/resume
+  tracking with F11; head-mouse for games without TrackIR.
+
+## Compared with Beam Eye Tracker
+
+| | Beam Eye Tracker | HeadTrack PC |
+| --- | --- | --- |
+| Head tracking into TrackIR/FreeTrack games | via opentrack (separate install) | built in, no opentrack |
+| Eye tracking on the screen | yes, proprietary model | yes: 9-point calibration, iris + head regression (`gaze_screen.py`), accuracy a few % of the screen |
+| Extended view (eyes + head move the camera) | yes | yes, both axes, per-axis gain and limits |
+| Streaming gaze overlay | yes | yes: OBS Browser Source at `/overlay.html` |
+| Developer API | SDK | local HTTP `/state.json` (head pose, gaze, game, link), any language |
+| Mouse by head / by gaze | yes | yes: head mouse for games without TrackIR, gaze cursor (follow or jump key) |
+| Per-game profiles, auto-switch | yes | yes, driving/flight presets, saved per game |
+| Phone as camera | separate phone app | the Android app streams to this PC and is found automatically |
+| Hotkeys (recenter, pause) | yes | yes, keyboard or wheel/joystick button |
+| Price / licence | paid | free, MIT, open source |
+
+Honest gaps: Beam's eye model is tuned on far more data than a MediaPipe iris fit, so expect
+more jitter and a larger error here, especially with a 720p webcam in poor light. Nothing has
+been measured on a real webcam yet (`docs/test-report.md`).
 
 ## Install (Windows, Python 3.10–3.13)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .pose import HeadPose
 
@@ -117,6 +117,7 @@ def eye_signals_from_result(blendshapes, landmarks) -> Optional[EyeSignals]:
 class GazeSource(Enum):
     MODEL = "Model scores"
     IRIS = "Iris position"
+    SCREEN = "Screen gaze (calibrated)"
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,10 @@ class EyeAssistSettings:
     compensation_scale: float = 0.0
     compensation_bias: float = 0.0
     compensation_source: Optional[GazeSource] = None
+    # Extended view (SCREEN source): vertical gain/limit; horizontal uses gain_degrees/max_degrees.
+    vertical: bool = True
+    gain_degrees_y: float = 15.0
+    max_degrees_y: float = 15.0
 
     def __post_init__(self):
         if not (math.isfinite(self.dead_zone) and 0.0 <= self.dead_zone <= 0.95):
@@ -150,12 +155,23 @@ class EyeAssistSettings:
 SNAP_DEGREES = 0.01
 
 
+def _shape(h: float, dead_zone: float, gain: float, limit: float) -> float:
+    a = abs(h)
+    if a <= dead_zone:
+        return 0.0
+    scaled = (a - dead_zone) / (1.0 - dead_zone) * gain
+    return math.copysign(min(scaled, limit), h)
+
+
 class EyeAssist:
-    """Stateful stage applied after the head pipeline; adds yaw only while tracked, calibrated and eyes open."""
+    """Stateful stage applied after the head pipeline; adds yaw (and pitch with the SCREEN source)
+    only while tracked, calibrated and eyes open. With the SCREEN source the glance is the
+    calibrated gaze point relative to the screen centre (-1..1 each axis): the "extended view"."""
 
     def __init__(self, settings: EyeAssistSettings = EyeAssistSettings()):
         self.settings = settings
         self.yaw_degrees = 0.0
+        self.pitch_degrees = 0.0
         self._last_nanos: Optional[int] = None
 
     def update(self, s: EyeAssistSettings) -> None:
@@ -163,43 +179,59 @@ class EyeAssist:
 
     def reset(self) -> None:
         self.yaw_degrees = 0.0
+        self.pitch_degrees = 0.0
         self._last_nanos = None
 
-    def target(self, reading: Optional[GazeReading], head_yaw_degrees: float = 0.0) -> float:
+    def target(self, reading: Optional[GazeReading], head_yaw_degrees: float = 0.0,
+               screen: Optional[Tuple[float, float]] = None) -> Tuple[float, float]:
+        """(yaw, pitch) to add. `screen` = gaze point (x, y) in 0..1 for the SCREEN source."""
         s = self.settings
-        if not s.enabled or reading is None or not reading.eyes_open:
-            return 0.0
+        if not s.enabled:
+            return (0.0, 0.0)
+        if s.source is GazeSource.SCREEN:
+            if screen is None or not all(math.isfinite(v) for v in screen):
+                return (0.0, 0.0)
+            if reading is not None and not reading.eyes_open:
+                return (0.0, 0.0)
+            hx = max(-1.0, min(1.0, (screen[0] - 0.5) * 2.0))
+            hy = max(-1.0, min(1.0, (0.5 - screen[1]) * 2.0))  # up is positive
+            yaw = _shape(hx, s.dead_zone, s.gain_degrees, s.max_degrees)
+            pitch = _shape(hy, s.dead_zone, s.gain_degrees_y, s.max_degrees_y) if s.vertical else 0.0
+            return (yaw, pitch)
+        if reading is None or not reading.eyes_open:
+            return (0.0, 0.0)
         h = reading.blend_horizontal if s.source is GazeSource.MODEL else reading.iris_horizontal
         if not math.isfinite(h):
-            return 0.0
+            return (0.0, 0.0)
         if s.head_compensation:
             if not s.compensation_ready or not math.isfinite(head_yaw_degrees):
-                return 0.0
+                return (0.0, 0.0)
             h = h - s.compensation_bias + s.compensation_scale * head_yaw_degrees
-        a = abs(h)
-        if a <= s.dead_zone:
-            return 0.0
-        scaled = (a - s.dead_zone) / (1.0 - s.dead_zone) * s.gain_degrees
-        return math.copysign(min(scaled, s.max_degrees), h)
+        return (_shape(h, s.dead_zone, s.gain_degrees, s.max_degrees), 0.0)
 
     def apply(self, pose: HeadPose, reading: Optional[GazeReading], active: bool, now_nanos: int,
-              head_yaw_degrees: float = 0.0) -> HeadPose:
-        goal = self.target(reading, head_yaw_degrees) if active else 0.0
+              head_yaw_degrees: float = 0.0, screen: Optional[Tuple[float, float]] = None) -> HeadPose:
+        goal_yaw, goal_pitch = self.target(reading, head_yaw_degrees, screen) if active else (0.0, 0.0)
         tau = self.settings.smoothing_seconds
         if tau <= 0.0:
-            self.yaw_degrees = goal
+            self.yaw_degrees, self.pitch_degrees = goal_yaw, goal_pitch
         elif self._last_nanos is None:
-            self.yaw_degrees = 0.0
+            self.yaw_degrees = self.pitch_degrees = 0.0
         else:
             dt = max(0.0, min(1.0, (now_nanos - self._last_nanos) / 1e9))
-            self.yaw_degrees += (goal - self.yaw_degrees) * (1.0 - math.exp(-dt / tau))
+            k = 1.0 - math.exp(-dt / tau)
+            self.yaw_degrees += (goal_yaw - self.yaw_degrees) * k
+            self.pitch_degrees += (goal_pitch - self.pitch_degrees) * k
         self._last_nanos = now_nanos
         if abs(self.yaw_degrees) < SNAP_DEGREES:
             self.yaw_degrees = 0.0
-        if self.yaw_degrees == 0.0:
+        if abs(self.pitch_degrees) < SNAP_DEGREES:
+            self.pitch_degrees = 0.0
+        if self.yaw_degrees == 0.0 and self.pitch_degrees == 0.0:
             return pose
         from dataclasses import replace
-        return replace(pose, yaw=max(-180.0, min(180.0, pose.yaw + self.yaw_degrees)))
+        return replace(pose, yaw=max(-180.0, min(180.0, pose.yaw + self.yaw_degrees)),
+                       pitch=max(-180.0, min(180.0, pose.pitch + self.pitch_degrees)))
 
 
 class CompensationFailure(Enum):

@@ -29,9 +29,11 @@ from .hotkeys import HotkeySettings, parse_key
 from .inputs.base import SourceStatus
 from .mapping import AxisSettings, ResponseCurve
 from .net.discovery import local_ipv4_addresses
+from .outputs import games as game_table
+from .outputs.mouse import MouseMode, MouseSettings
 from .pose import Axis, HeadPose
-from .profile import FreetrackInterface, SourceKind, TrackingProfile
-from .profiles import PRESETS
+from .profile import ApiSettings, FreetrackInterface, SourceKind, TrackingProfile
+from .profiles import PRESETS, category_of
 from .selfcheck import CheckResult
 
 POLL_MS = 50
@@ -53,6 +55,8 @@ class HeadTrackWindow:
         self.root.minsize(640, 520)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._preview_image = None
+        self._cal_window = None
+        self._last_api_requests = -2
         self._last_tuning_label = ""
         self._last_check_time = 0.0
         self._centre_done = False
@@ -126,6 +130,14 @@ class HeadTrackWindow:
         ttk.Label(f, textvariable=self.game_var, foreground="#262").pack(anchor="w", pady=(8, 0))
         self.auto_var = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.auto_var, foreground="#666").pack(anchor="w")
+        row = ttk.Frame(f)
+        row.pack(anchor="w", pady=(4, 0))
+        self.pause_btn = ttk.Button(row, text="Pause tracking (F11)", command=self.app.engine.toggle_pause)
+        self.pause_btn.pack(side="left")
+        self.gaze_mini = tk.Canvas(row, width=96, height=54, bg="#222", highlightthickness=1, highlightbackground="#888")
+        self.gaze_mini.pack(side="left", padx=10)
+        self.gaze_var = tk.StringVar(value="Eye tracking: not calibrated")
+        ttk.Label(row, textvariable=self.gaze_var, foreground="#666").pack(side="left")
         # Direction check: a cockpit that moves like a driving game's camera, driven by the pose being sent.
         box = ttk.LabelFrame(f, text="Direction check (what the game should do)", padding=6)
         box.pack(fill="x", pady=(8, 0))
@@ -312,6 +324,9 @@ class HeadTrackWindow:
         ttk.Checkbutton(row, text="Recenter hotkey (works inside the game):", variable=self.hotkey_var, command=self._apply_recenter).pack(side="left")
         self.hotkey_key = tk.StringVar(value=p.hotkeys.recenter_key)
         ttk.Entry(row, textvariable=self.hotkey_key, width=10).pack(side="left", padx=4)
+        ttk.Label(row, text="pause/resume key").pack(side="left", padx=(8, 2))
+        self.toggle_key = tk.StringVar(value=p.hotkeys.toggle_key)
+        ttk.Entry(row, textvariable=self.toggle_key, width=8).pack(side="left")
         ttk.Label(row, text="wheel/joystick").pack(side="left", padx=(8, 2))
         self.joy_id = tk.StringVar(value=str(p.hotkeys.joystick_id))
         ttk.Spinbox(row, from_=-1, to=15, textvariable=self.joy_id, width=4).pack(side="left")
@@ -352,6 +367,89 @@ class HeadTrackWindow:
         ttk.Button(row, text="Calibrate (6 s)", command=self.app.engine.start_gaze_calibration).pack(side="left", padx=6)
         self.eye_msg = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.eye_msg, wraplength=560, justify="left").pack(anchor="w")
+
+        # Eye tracking on the screen (Beam-style): calibration, extended view
+        box = ttk.LabelFrame(f, text="Eye tracking (where you look on the screen)", padding=8)
+        box.pack(fill="x", pady=4)
+        ttk.Label(box, wraplength=560, justify="left", text=(
+            "Calibrate once per seat/camera position: look at 9 dots (about 20 s). The gaze point then drives the "
+            "Extended view (head + eyes into the game), the streaming overlay, the gaze cursor and the local API.")).pack(anchor="w")
+        row = ttk.Frame(box)
+        row.pack(anchor="w", pady=2)
+        ttk.Button(row, text="Calibrate eye tracking (9 points)", command=self._start_screen_calibration).pack(side="left")
+        ttk.Button(row, text="Clear", command=self.app.engine.clear_screen_calibration).pack(side="left", padx=4)
+        self.screen_gaze_var = tk.StringVar(value="")
+        ttk.Label(row, textvariable=self.screen_gaze_var, wraplength=330, justify="left").pack(side="left", padx=8)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", pady=2)
+        self.ext_var = tk.BooleanVar(value=p.eye_assist.enabled and p.eye_assist.source is GazeSource.SCREEN)
+        ttk.Checkbutton(row, text="Extended view: eyes add to the game camera", variable=self.ext_var, command=self._apply_extended).pack(side="left")
+        self.ext_vertical = tk.BooleanVar(value=p.eye_assist.vertical)
+        ttk.Checkbutton(row, text="vertical too", variable=self.ext_vertical, command=self._apply_extended).pack(side="left", padx=6)
+        ttk.Label(row, text="gain ° yaw/pitch").pack(side="left", padx=(8, 2))
+        self.ext_gain = tk.StringVar(value=f"{p.eye_assist.gain_degrees:g}")
+        ttk.Entry(row, textvariable=self.ext_gain, width=5).pack(side="left")
+        self.ext_gain_y = tk.StringVar(value=f"{p.eye_assist.gain_degrees_y:g}")
+        ttk.Entry(row, textvariable=self.ext_gain_y, width=5).pack(side="left", padx=2)
+        ttk.Button(row, text="Apply", command=self._apply_extended).pack(side="left", padx=6)
+
+        # Streaming overlay + local API
+        box = ttk.LabelFrame(f, text="Streaming overlay and local API", padding=8)
+        box.pack(fill="x", pady=4)
+        row = ttk.Frame(box)
+        row.pack(anchor="w")
+        self.api_var = tk.BooleanVar(value=p.api.enabled)
+        ttk.Checkbutton(row, text="Local API on port", variable=self.api_var, command=self._apply_api).pack(side="left")
+        self.api_port = tk.StringVar(value=str(p.api.port))
+        ttk.Entry(row, textvariable=self.api_port, width=6).pack(side="left", padx=4)
+        ttk.Button(row, text="Apply", command=self._apply_api).pack(side="left")
+        ttk.Button(row, text="Copy overlay URL", command=self._copy_overlay).pack(side="left", padx=6)
+        ttk.Button(row, text="Open API page", command=self._open_api).pack(side="left")
+        self.api_msg = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.api_msg, wraplength=560, justify="left", foreground="#444").pack(anchor="w")
+        ttk.Label(box, wraplength=560, justify="left", foreground="#666", text=(
+            "OBS: Sources → + → Browser, paste the overlay URL, set width/height to your screen. A gaze bubble follows "
+            "your eyes on the stream. /state.json gives head pose and gaze to any script or mod (localhost only).")).pack(anchor="w")
+
+        # Mouse
+        box = ttk.LabelFrame(f, text="Mouse (games without TrackIR, or cursor by gaze)", padding=8)
+        box.pack(fill="x", pady=4)
+        row = ttk.Frame(box)
+        row.pack(anchor="w")
+        self.mouse_mode = tk.StringVar(value=p.mouse.mode.value)
+        for mode, label in ((MouseMode.OFF, "Off"), (MouseMode.HEAD, "Head moves the mouse"), (MouseMode.GAZE_FOLLOW, "Cursor follows gaze"), (MouseMode.GAZE_HOTKEY, "Cursor jumps to gaze on a key")):
+            ttk.Radiobutton(row, text=label, value=mode.value, variable=self.mouse_mode, command=self._apply_mouse).pack(side="left", padx=3)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", pady=2)
+        ttk.Label(row, text="px per degree x/y").pack(side="left")
+        self.mouse_ppd_x = tk.StringVar(value=f"{p.mouse.pixels_per_degree_x:g}")
+        self.mouse_ppd_y = tk.StringVar(value=f"{p.mouse.pixels_per_degree_y:g}")
+        ttk.Entry(row, textvariable=self.mouse_ppd_x, width=5).pack(side="left", padx=2)
+        ttk.Entry(row, textvariable=self.mouse_ppd_y, width=5).pack(side="left", padx=2)
+        self.mouse_inv = tk.BooleanVar(value=p.mouse.invert_y)
+        ttk.Checkbutton(row, text="invert Y", variable=self.mouse_inv).pack(side="left", padx=6)
+        ttk.Label(row, text="jump key").pack(side="left", padx=(8, 2))
+        self.warp_key = tk.StringVar(value=p.hotkeys.gaze_warp_key)
+        ttk.Entry(row, textvariable=self.warp_key, width=8).pack(side="left")
+        ttk.Button(row, text="Apply", command=self._apply_mouse).pack(side="left", padx=6)
+        self.mouse_msg = tk.StringVar(value="Head mode: pause with the toggle key when you need the real mouse (menus, chat).")
+        ttk.Label(box, textvariable=self.mouse_msg, wraplength=560, justify="left", foreground="#666").pack(anchor="w")
+
+        # Supported games
+        box = ttk.LabelFrame(f, text="Games (TrackIR / FreeTrack list from opentrack, 745 titles)", padding=8)
+        box.pack(fill="x", pady=4)
+        row = ttk.Frame(box)
+        row.pack(fill="x")
+        ttk.Label(row, text="Search:").pack(side="left")
+        self.game_search = tk.StringVar(value="")
+        e = ttk.Entry(row, textvariable=self.game_search, width=28)
+        e.pack(side="left", padx=4)
+        e.bind("<KeyRelease>", lambda _e: self._fill_games())
+        self.games_list = tk.Listbox(box, height=6, width=80)
+        self.games_list.pack(fill="x", pady=2)
+        self._fill_games()
+        ttk.Label(box, wraplength=560, justify="left", foreground="#666", text=(
+            "Any game that supports TrackIR or FreeTrack works, listed or not. Games without either: use the head mouse above.")).pack(anchor="w")
 
         # Diagnostics
         box = ttk.LabelFrame(f, text="Diagnostics", padding=8)
@@ -454,9 +552,13 @@ class HeadTrackWindow:
             jid, jbtn = int(self.joy_id.get()), int(self.joy_btn.get())
         except ValueError:
             jid, jbtn = -1, -1
+        toggle = self.toggle_key.get().strip()
+        if toggle and parse_key(toggle) is None:
+            self.hotkey_msg.set(f"Unknown pause key '{toggle}'.")
+            return
         self.app.update_profile(replace(p, auto_centre=replace(p.auto_centre, enabled=bool(self.auto_centre_var.get())),
-                                        hotkeys=HotkeySettings(enabled=bool(self.hotkey_var.get()), recenter_key=key or "F12",
-                                                               joystick_id=jid, joystick_button=jbtn)))
+                                        hotkeys=replace(p.hotkeys, enabled=bool(self.hotkey_var.get()), recenter_key=key or "F12",
+                                                        joystick_id=jid, joystick_button=jbtn, toggle_key=toggle)))
         self.hotkey_msg.set("Applied." + (f" {self.app.hotkeys.error}" if self.app.hotkeys.error else ""))
 
     def _apply_eye(self) -> None:
@@ -470,6 +572,141 @@ class HeadTrackWindow:
             return
         self.app.update_profile(replace(p, eye_assist=ea))
         self.eye_msg.set("Applied. The camera restarts with the eye model when turning this on or off.")
+
+    def _apply_extended(self) -> None:
+        p = self.app.profile
+        try:
+            gain = float(self.ext_gain.get().replace(",", "."))
+            gain_y = float(self.ext_gain_y.get().replace(",", "."))
+        except ValueError:
+            self.screen_gaze_var.set("Check the gain numbers")
+            return
+        on = bool(self.ext_var.get())
+        ea = replace(p.eye_assist, enabled=on or (p.eye_assist.enabled and p.eye_assist.source is not GazeSource.SCREEN),
+                     source=GazeSource.SCREEN if on else p.eye_assist.source, vertical=bool(self.ext_vertical.get()),
+                     gain_degrees=gain, max_degrees=max(gain, p.eye_assist.max_degrees) if on else p.eye_assist.max_degrees,
+                     gain_degrees_y=gain_y, max_degrees_y=max(gain_y, p.eye_assist.max_degrees_y))
+        self.app.update_profile(replace(p, eye_assist=ea))
+        self.eye_var.set(ea.enabled)
+        self.eye_source.set(ea.source.name)
+
+    def _apply_api(self) -> None:
+        p = self.app.profile
+        try:
+            port = int(self.api_port.get())
+            if not 1024 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            self.api_msg.set("Port must be 1024..65535")
+            return
+        self.app.update_profile(replace(p, api=ApiSettings(enabled=bool(self.api_var.get()), port=port, bind=p.api.bind)))
+        self._refresh_api_msg()
+
+    def _refresh_api_msg(self) -> None:
+        s = self.app.server
+        if s is None:
+            self.api_msg.set("API off")
+        elif s.error:
+            self.api_msg.set(s.error)
+        else:
+            self.api_msg.set(f"Overlay: {s.url}overlay.html   State: {s.url}state.json   ({s.requests} requests)")
+
+    def _copy_overlay(self) -> None:
+        s = self.app.server
+        if s is None or s.error:
+            self.api_msg.set("Turn the API on first")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(f"{s.url}overlay.html")
+        self.api_msg.set("Overlay URL copied: paste it into an OBS Browser Source")
+
+    def _open_api(self) -> None:
+        s = self.app.server
+        if s is not None and not s.error:
+            import webbrowser
+            webbrowser.open(s.url)
+
+    def _apply_mouse(self) -> None:
+        p = self.app.profile
+        try:
+            ms = MouseSettings(mode=MouseMode(self.mouse_mode.get()), pixels_per_degree_x=float(self.mouse_ppd_x.get().replace(",", ".")),
+                               pixels_per_degree_y=float(self.mouse_ppd_y.get().replace(",", ".")), invert_y=bool(self.mouse_inv.get()),
+                               dead_zone_degrees=p.mouse.dead_zone_degrees, gaze_smoothing=p.mouse.gaze_smoothing)
+        except ValueError as e:
+            self.mouse_msg.set(f"Check the numbers: {e}")
+            return
+        warp = self.warp_key.get().strip()
+        if warp and parse_key(warp) is None:
+            self.mouse_msg.set(f"Unknown jump key '{warp}'")
+            return
+        self.app.update_profile(replace(p, mouse=ms, hotkeys=replace(p.hotkeys, gaze_warp_key=warp)))
+        note = next((n for n in self.app.output_notes if "Mouse" in n), "Mouse off")
+        self.mouse_msg.set(note + ("  Gaze modes need the eye calibration above." if ms.mode in (MouseMode.GAZE_FOLLOW, MouseMode.GAZE_HOTKEY) and not p.screen_gaze.weights else ""))
+
+    def _fill_games(self) -> None:
+        q = self.game_search.get().strip().lower()
+        self.games_list.delete(0, "end")
+        shown = 0
+        for g in sorted(game_table.load_games().values(), key=lambda g: g.name.lower()):
+            if q and q not in g.name.lower():
+                continue
+            self.games_list.insert("end", f"{g.name}   (ID {g.game_id}, {category_of(g.game_id)} preset)")
+            shown += 1
+            if shown >= 200:
+                self.games_list.insert("end", "… type to narrow the list")
+                break
+
+    def _start_screen_calibration(self) -> None:
+        if self._cal_window is not None:
+            return
+        self.app.start_screen_calibration()
+        win = tk.Toplevel(self.root)
+        win.attributes("-fullscreen", True)
+        win.attributes("-topmost", True)
+        win.configure(bg="#111")
+        c = tk.Canvas(win, bg="#111", highlightthickness=0)
+        c.pack(fill="both", expand=True)
+        win.bind("<Escape>", lambda _e: self._end_screen_calibration(cancel=True))
+        self._cal_window = (win, c)
+        self.root.after(50, self._draw_calibration)
+
+    def _end_screen_calibration(self, cancel: bool = False) -> None:
+        if cancel:
+            self.app.engine.cancel_screen_calibration()
+        if self._cal_window is not None:
+            win, _ = self._cal_window
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            self._cal_window = None
+
+    def _draw_calibration(self) -> None:
+        if self._cal_window is None:
+            return
+        win, c = self._cal_window
+        st = self.app.engine.state.screen_calibration
+        if st is None or st.phase in ("done", "failed"):
+            self._end_screen_calibration()
+            return
+        w, h = max(1, c.winfo_width()), max(1, c.winfo_height())
+        c.delete("all")
+        x, y = st.point[0] * w, st.point[1] * h
+        r = 22 if st.phase == "settle" else 14
+        c.create_oval(x - r - 8, y - r - 8, x + r + 8, y + r + 8, outline="#5af", width=2)
+        c.create_oval(x - r, y - r, x + r, y + r, fill="#5af" if st.phase == "sample" else "#357", outline="")
+        c.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#fff", outline="")
+        c.create_arc(x - r - 14, y - r - 14, x + r + 14, y + r + 14, start=90, extent=-360 * st.progress, style="arc", outline="#fff", width=3)
+        c.create_text(w / 2, h - 40, fill="#ccc", font=("", 14), text=f"Look at the dot and keep your head still  ·  point {st.index + 1} of {st.total}  ·  Esc cancels")
+        self.root.after(33, self._draw_calibration)
+
+    def _draw_gaze_mini(self, st: EngineState) -> None:
+        c = self.gaze_mini
+        c.delete("all")
+        g = st.gaze_point
+        if g is not None:
+            x, y = max(0.0, min(1.0, g.x)) * 96, max(0.0, min(1.0, g.y)) * 54
+            c.create_oval(x - 5, y - 5, x + 5, y + 5, fill="#5af" if g.on_screen else "#a55", outline="")
 
     def _run_fix(self, action: str) -> None:
         self.fix_msg.set(self.app.run_fix(action))
@@ -559,9 +796,20 @@ class HeadTrackWindow:
             if self.sweep_var.get().endswith("%)"):
                 self.sweep_var.set("Sweep finished. Every direction right? Then you are set. Reversed axis → Invert it in Advanced → Tuning.")
         auto = "Automatic centre: adjusting to your resting pose…" if st.auto_centre_active else ""
-        if st.eye_yaw_degrees:
-            auto = (auto + "  " if auto else "") + f"Eye-assisted look adds {st.eye_yaw_degrees:+.0f}° yaw"
+        if st.eye_yaw_degrees or st.eye_pitch_degrees:
+            auto = (auto + "  " if auto else "") + f"Eyes add {st.eye_yaw_degrees:+.0f}° yaw {st.eye_pitch_degrees:+.0f}° pitch"
         self.auto_var.set(auto)
+        self.pause_btn.configure(text="Resume tracking (F11)" if st.paused else "Pause tracking (F11)")
+        self._draw_gaze_mini(st)
+        self.gaze_var.set(f"Eye tracking: {st.screen_gaze_quality}" + (f"  ({st.gaze_point.x:.2f}, {st.gaze_point.y:.2f})" if st.gaze_point else ""))
+        cal = st.screen_calibration
+        if cal is not None and cal.phase in ("done", "failed"):
+            self.screen_gaze_var.set(cal.message)
+        elif cal is None:
+            self.screen_gaze_var.set(f"Status: {st.screen_gaze_quality}")
+        if self._last_api_requests != (self.app.server.requests if self.app.server else -1):
+            self._last_api_requests = self.app.server.requests if self.app.server else -1
+            self._refresh_api_msg()
         if self._last_tuning_label != self.app.tuning_label():
             self._last_tuning_label = self.app.tuning_label()
             self._load_tuning_fields()
@@ -575,7 +823,9 @@ class HeadTrackWindow:
         self.live_vars["output"].set(_fmt(st.output))
         state = {TrackingState.TRACKING: "Tracking", TrackingState.HOLDING: "Face lost: holding",
                  TrackingState.RETURNING: "Face lost: returning to centre", TrackingState.NEUTRAL: "No face: centre"}[st.tracking]
-        if st.phone_fresh:
+        if st.paused:
+            state = "PAUSED: the game gets the centre pose (F11 resumes)"
+        elif st.phone_fresh:
             state = "Phone is driving the game"
         if st.calibration in (CalibrationPhase.COUNTDOWN, CalibrationPhase.SAMPLING):
             state = f"Calibrating… {st.calibration_seconds_left:.0f}" if st.calibration is CalibrationPhase.COUNTDOWN else "Measuring…"

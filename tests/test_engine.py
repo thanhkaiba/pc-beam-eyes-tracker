@@ -325,3 +325,120 @@ class AppGameSwitchTest(unittest.TestCase):
 def DRIVING_MAPPING():
     from headtrack_pc.profile import DRIVING
     return DRIVING.mapping
+
+
+class EngineGazeAndPauseTest(unittest.TestCase):
+    def setUp(self):
+        self.clock = FakeClock()
+        from headtrack_pc.gaze import EyeAssistSettings, GazeSource
+        profile = replace(PASSTHROUGH, smoothing=SmoothingSettings(type=FilterType.NONE),
+                          eye_assist=EyeAssistSettings(enabled=True, source=GazeSource.SCREEN, dead_zone=0.1, gain_degrees=20,
+                                                       max_degrees=20, gain_degrees_y=10, max_degrees_y=10, smoothing_seconds=0.0))
+        self.engine = TrackingEngine(profile, clock=self.clock)
+        self.out = FakeOutput()
+        self.engine.add_output(self.out)
+        self.engine.start()
+        self.cam = FakeSource()
+        self.engine.set_source(SourceKind.WEBCAM, self.cam)
+        self.engine.run_sync(lambda: None)
+
+    def tearDown(self):
+        self.engine.stop()
+
+    def settle(self):
+        self.engine.run_sync(lambda: None)
+
+    def feed(self, pose, n=1, step_ms=40, eyes=None):
+        for _ in range(n):
+            self.clock.advance_ms(step_ms)
+            self.cam.cb(Frame(pose, self.clock.now, eyes=eyes))
+            self.settle()
+
+    def test_screen_calibration_then_extended_view_and_api(self):
+        from tests.test_gaze_screen import synth_eyes
+        from headtrack_pc import gaze_screen as gs
+        got = []
+        self.engine.add_profile_listener(got.append)
+        self.feed(HeadPose(0, 0, 0, 0, 0, -50))
+        self.engine.recenter()
+        self.settle()
+        self.engine.start_screen_calibration()
+        self.settle()
+        st = self.engine.state
+        self.assertIsNotNone(st.screen_calibration)
+        self.assertEqual(st.screen_calibration.index, 0)
+        # feed frames looking at whatever point the calibration shows, until it finishes
+        for _ in range(900):
+            cal = self.engine.state.screen_calibration
+            if cal is None or cal.phase in ("done", "failed"):
+                break
+            px, py = cal.point
+            head = HeadPose(0.5, -0.5, 0, 0, 0, -50)
+            self.feed(head, step_ms=33, eyes=synth_eyes(px, py, head))
+        st = self.engine.state
+        self.assertEqual(st.screen_calibration.phase, "done", st.screen_calibration.message)
+        self.assertNotEqual(st.screen_gaze_quality, "not calibrated")
+        self.assertEqual(len(got), 1)
+        self.assertEqual(len(got[0].screen_gaze.weights), gs.FEATURE_COUNT * 2)
+        # looking at the right edge: gaze point near x=1, extended view adds yaw
+        head = HeadPose(0.5, -0.5, 0, 0, 0, -50)
+        self.feed(head, n=5, step_ms=33, eyes=synth_eyes(0.95, 0.5, head))
+        st = self.engine.state
+        self.assertIsNotNone(st.gaze_point)
+        self.assertGreater(st.gaze_point.x, 0.75)
+        self.assertGreater(st.eye_yaw_degrees, 5.0)
+        self.assertTrue(self.out.written[-1][2] & P.FLAG_EYE_ASSIST)
+        api = self.engine.api_state()
+        self.assertTrue(api["gaze"]["on_screen"])
+        self.assertAlmostEqual(api["sent"]["yaw"], self.out.written[-1][0].yaw)
+        self.assertEqual(api["game"]["name"], "Fake game")
+        # a mouse-like output receives the gaze point
+        class GazeSink(FakeOutput):
+            name = "mouse"
+            def __init__(self):
+                super().__init__(); self.points = []; self.active = None
+            def gaze(self, x, y):
+                self.points.append((x, y))
+        sink = GazeSink()
+        self.engine.add_output(sink)
+        self.feed(head, n=2, step_ms=33, eyes=synth_eyes(0.2, 0.5, head))
+        self.assertTrue(sink.points)
+        self.assertTrue(sink.active)
+        self.engine.clear_screen_calibration()
+        self.settle()
+        self.assertEqual(self.engine.state.screen_gaze_quality, "not calibrated")
+        self.assertEqual(len(got), 2)
+
+    def test_calibration_fails_without_irises_and_can_be_cancelled(self):
+        self.engine.start_screen_calibration()
+        self.settle()
+        for _ in range(200):
+            cal = self.engine.state.screen_calibration
+            if cal is None or cal.phase == "failed":
+                break
+            self.feed(HeadPose(0, 0, 0, 0, 0, -50), step_ms=33)
+        self.assertEqual(self.engine.state.screen_calibration.phase, "failed")
+        self.engine.start_screen_calibration()
+        self.settle()
+        self.engine.cancel_screen_calibration()
+        self.settle()
+        self.assertEqual(self.engine.state.screen_calibration.phase, "failed")
+        self.assertIn("Cancelled", self.engine.state.screen_calibration.message)
+
+    def test_pause_sends_neutral_and_resumes(self):
+        self.feed(HeadPose(0, 0, 0, 0, 0, -50))
+        self.engine.recenter()
+        self.settle()
+        self.feed(HeadPose(20, 0, 0, 0, 0, -50))
+        self.assertAlmostEqual(self.out.written[-1][0].yaw, (20.0 - 1.0) * (90.0 / 89.0), delta=0.01)
+        self.engine.toggle_pause()
+        self.settle()
+        self.assertTrue(self.engine.state.paused)
+        self.feed(HeadPose(20, 0, 0, 0, 0, -50))
+        self.assertEqual(self.out.written[-1][0].yaw, 0.0)
+        self.assertFalse(self.out.written[-1][2] & P.FLAG_TRACKING_VALID)
+        self.assertFalse(self.engine.api_state()["sent"]["yaw"])
+        self.engine.set_paused(False)
+        self.settle()
+        self.feed(HeadPose(20, 0, 0, 0, 0, -50))
+        self.assertGreater(self.out.written[-1][0].yaw, 15.0)

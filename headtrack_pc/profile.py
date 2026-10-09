@@ -14,6 +14,7 @@ from .calibration import CalibrationSettings
 from .faceloss import FaceLossSettings
 from .gaze import EyeAssistSettings, GazeSource
 from .hotkeys import HotkeySettings
+from .outputs.mouse import MouseMode, MouseSettings
 from .filters import FilterType, SmoothingSettings
 from .mapping import TRANSLATION_DEFAULT, AxisSettings, MappingSettings, ResponseCurve
 from .pose import HeadPose
@@ -63,6 +64,22 @@ class PhoneSettings:
 
 
 @dataclass(frozen=True)
+class ApiSettings:
+    enabled: bool = True
+    port: int = 4245
+    bind: str = "127.0.0.1"
+
+
+@dataclass(frozen=True)
+class ScreenGazeSettings:
+    """Calibrated screen-gaze model (weights from gaze_screen.fit); empty = not calibrated."""
+    weights: tuple = ()
+    rmse_x: float = 1.0
+    rmse_y: float = 1.0
+    points: int = 0
+
+
+@dataclass(frozen=True)
 class TrackingProfile:
     schema_version: int = SCHEMA_VERSION
     name: str = "Driving (default)"
@@ -77,6 +94,9 @@ class TrackingProfile:
     eye_assist: EyeAssistSettings = EyeAssistSettings()
     auto_centre: AutoCentreSettings = AutoCentreSettings()
     hotkeys: HotkeySettings = HotkeySettings()
+    mouse: MouseSettings = MouseSettings()
+    api: ApiSettings = ApiSettings()
+    screen_gaze: ScreenGazeSettings = ScreenGazeSettings()
     neutral_pose: Optional[HeadPose] = None
 
 
@@ -119,6 +139,8 @@ def _from_json(cls: Any, data: Any) -> Any:
         return p
     if isinstance(cls, type) and issubclass(cls, Enum):
         return cls[data]
+    if cls is tuple:
+        return tuple(float(v) for v in data)
     if is_dataclass(cls):
         if not isinstance(data, dict):
             raise ValueError(f"expected object for {cls.__name__}")
@@ -153,6 +175,7 @@ _TYPES = {
     "freetrack_interface": FreetrackInterface, "phone": PhoneSettings, "neutral_pose": HeadPose,
     "source": SourceKind, "eye_assist": EyeAssistSettings, "gaze_source": GazeSource,
     "compensation_source": GazeSource, "auto_centre": AutoCentreSettings, "hotkeys": HotkeySettings,
+    "mouse": MouseSettings, "mode": MouseMode, "api": ApiSettings, "screen_gaze": ScreenGazeSettings,
 }
 
 
@@ -161,6 +184,8 @@ def _field_type(cls: Any, name: str) -> Any:
         if f.name == name:
             if cls is EyeAssistSettings and name == "source":
                 return GazeSource
+            if cls is ScreenGazeSettings and name == "weights":
+                return tuple
             if name in _TYPES:
                 return _TYPES[name]
             t = f.type
