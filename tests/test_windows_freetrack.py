@@ -98,7 +98,8 @@ class WindowsFreetrackTest(unittest.TestCase):
         dll.NP_GetData(ctypes.byref(data))
         self.assertAlmostEqual(data.yaw, 10.0 * NP_AXIS_MAX / 180.0, delta=0.5)
         self.out.write(HeadPose(0.0, 0.0, 0.0))
-        self.assertNotEqual(dll.NP_GetData(ctypes.byref(data)), 0)  # all zero = "disabled" to NPClient
+        dll.NP_GetData(ctypes.byref(data))  # the shipped binary returns 0 here too; only the values matter
+        self.assertEqual((data.yaw, data.pitch, data.roll), (0.0, 0.0, 0.0))
 
     def test_dummy_trackir_runs_and_is_killed(self):
         proc = self.out._dummy

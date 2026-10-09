@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", help="profile JSON path (default: per-user config dir)")
     p.add_argument("--calibrate-after", type=float, default=2.0, help="CLI: seconds before the automatic centre calibration (0 = never)")
     p.add_argument("--duration", type=float, default=0.0, help="CLI: stop after this many seconds (0 = until Ctrl+C)")
+    p.add_argument("--no-steam", action="store_true", help="skip the Steamworks initialisation even if steam_api64.dll is present")
     p.add_argument("--version", action="version", version=f"HeadTrack PC {__version__}")
     return p
 
@@ -103,14 +104,35 @@ def setup_logging() -> str:
     return path
 
 
+def start_steam(args):
+    """Optional Steamworks start-up. Returns (steam, exit_code_or_None)."""
+    import logging
+    from .steam import Steam
+    if args.no_steam:
+        return None, None
+    s = Steam()
+    status = s.start()
+    logging.getLogger("headtrack").info("steam: %s", status.message)
+    if status.restart_requested:
+        return s, 0  # Steam relaunches us through the client
+    return s, None
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging()
-    if args.cli:
-        return run_cli(args)
+    steam, code = start_steam(args)
+    if code is not None:
+        return code
     try:
-        from .gui import run_gui
-    except ImportError as e:
-        print(f"GUI unavailable ({e}); use --cli", file=sys.stderr)
-        return 2
-    return run_gui(profile_from_args(args), args.profile)
+        if args.cli:
+            return run_cli(args)
+        try:
+            from .gui import run_gui
+        except ImportError as e:
+            print(f"GUI unavailable ({e}); use --cli", file=sys.stderr)
+            return 2
+        return run_gui(profile_from_args(args), args.profile, steam)
+    finally:
+        if steam is not None:
+            steam.shutdown()

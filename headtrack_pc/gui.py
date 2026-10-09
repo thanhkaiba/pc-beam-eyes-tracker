@@ -37,8 +37,9 @@ def _fmt(p: Optional[HeadPose]) -> str:
 
 
 class HeadTrackWindow:
-    def __init__(self, app: App):
+    def __init__(self, app: App, steam=None):
         self.app = app
+        self.steam = steam
         self.root = tk.Tk()
         self.root.title(f"HeadTrack PC {__version__}")
         self.root.minsize(640, 520)
@@ -50,6 +51,12 @@ class HeadTrackWindow:
         self._build()
         self.root.after(POLL_MS, self._poll)
         self.root.after(PREVIEW_MS, self._preview)
+        if self.steam is not None:
+            self.root.after(100, self._steam_callbacks)
+
+    def _steam_callbacks(self) -> None:
+        self.steam.run_callbacks()
+        self.root.after(100, self._steam_callbacks)
 
     # --- layout -------------------------------------------------------------------------------
     def _build(self) -> None:
@@ -233,8 +240,9 @@ class HeadTrackWindow:
         self.diag_var = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.diag_var, font=("Courier", 9), justify="left").pack(anchor="w")
         ttk.Button(box, text="Copy report", command=self._copy_report).pack(anchor="w", pady=2)
+        steam_line = f" {self.steam.status.message}." if self.steam is not None else ""
         ttk.Label(f, foreground="#666", wraplength=560, justify="left", text=(
-            f"HeadTrack PC {__version__}. Same tracking as the Android app (MediaPipe Face Landmarker, "
+            f"HeadTrack PC {__version__}.{steam_line} Same tracking as the Android app (MediaPipe Face Landmarker, "
             "Apache 2.0). Game output re-implements opentrack's freetrack protocol and ships its client DLLs "
             "(opentrack, ISC licence). Everything stays on this PC and your LAN.")).pack(anchor="w", pady=8)
         return outer
@@ -449,12 +457,12 @@ class HeadTrackWindow:
         return 0
 
 
-def run_gui(profile: TrackingProfile, profile_path: Optional[str] = None) -> int:
+def run_gui(profile: TrackingProfile, profile_path: Optional[str] = None, steam=None) -> int:
     import logging
     import traceback
     try:
         app = App(profile, profile_path, log=logging.getLogger("headtrack").info)
-        return HeadTrackWindow(app).run()
+        return HeadTrackWindow(app, steam).run()
     except Exception:
         text = traceback.format_exc()
         logging.getLogger("headtrack").error(text)

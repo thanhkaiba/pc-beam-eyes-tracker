@@ -1,0 +1,13 @@
+"InstallScript"
+{
+	"Run Process"
+	{
+		"VC++ 2015-2022 Redistributable"
+		{
+			"HasRunKey"	"HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64"
+			"Process 1"	"%INSTALLDIR%\\_CommonRedist\\vcredist\\2022\\VC_redist.x64.exe"
+			"Command 1"	"/quiet /norestart"
+			"NoCleanUp"	"1"
+		}
+	}
+}

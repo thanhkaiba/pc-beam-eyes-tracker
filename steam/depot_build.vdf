@@ -1,0 +1,14 @@
+"DepotBuild"
+{
+	"DepotID"	"YOUR_DEPOT_ID"
+	"ContentRoot"	"..\dist\HeadTrackPC\"
+	"FileMapping"
+	{
+		"LocalPath"	"*"
+		"DepotPath"	"."
+		"recursive"	"1"
+	}
+	"FileExclusion"	"*.pdb"
+	"FileExclusion"	"*.log"
+	"FileExclusion"	"steam_appid.txt"
+}

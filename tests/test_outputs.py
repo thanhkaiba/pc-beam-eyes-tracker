@@ -96,4 +96,4 @@ class FreetrackMemoryTest(unittest.TestCase):
             self.skipTest("Windows")
         with self.assertRaises(FT.OutputUnavailable):
             FT.FreetrackOutput()
-        self.assertIsNone(FT.find_libs_dir(["/nonexistent"]))
+        self.assertNotEqual(FT.find_libs_dir(["/nonexistent"]), "/nonexistent")

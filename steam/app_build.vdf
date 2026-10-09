@@ -1,0 +1,12 @@
+"AppBuild"
+{
+	"AppID"	"YOUR_APP_ID"
+	"Desc"	"HeadTrack PC"
+	"BuildOutput"	"..\build\steam-output\"
+	"ContentRoot"	"..\dist\HeadTrackPC\"
+	"SetLive"	""   // e.g. "beta" to publish straight to that branch; empty = upload only
+	"Depots"
+	{
+		"YOUR_DEPOT_ID"	"depot_build.vdf"
+	}
+}
