@@ -94,6 +94,8 @@ Android repo can point at this PC's UDP output; the game check is the one that m
 
 ## Licensing
 
-This project's own code is unlicensed-as-yet (same as the Android repo). It redistributes
-opentrack binaries and its game table (ISC) and uses MediaPipe (Apache 2.0): see
-`THIRD_PARTY_NOTICES.md`.
+HeadTrack PC is open source under the MIT licence (`LICENSE`). It redistributes opentrack's
+client binaries and game table (ISC) and uses MediaPipe (Apache 2.0): see
+`THIRD_PARTY_NOTICES.md`. The companion Android app is a separate, closed-source product; this
+repository documents the protocols it speaks (`docs/discovery.md`, the opentrack 48-byte and
+HeadTrack 72-byte packets) so any sender can interoperate.

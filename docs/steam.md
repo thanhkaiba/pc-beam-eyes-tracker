@@ -18,7 +18,9 @@ That folder is the Steam depot content; `HeadTrackPC.exe` is the launch option.
 - Running opentrack at the same time conflicts (two writers of the same shared memory).
 
 ## Licensing to clear before publishing
-- Your own code: pick and add a licence file (none in either repo yet).
+- This program is MIT-licensed open source (`LICENSE`); the Steam listing can say so and link
+  the repository. Open source puts it in the same position as opentrack has held since 2013;
+  it lowers, not removes, the publisher's exposure for the TrackIR emulation below.
 - opentrack files (`freetrackclient*.dll`, `TrackIR.exe`, `games.csv`, and the protocol we
   re-implement): ISC, attribution kept in `THIRD_PARTY_NOTICES.md`; fine to redistribute.
 - `NPClient*.dll`: opentrack ships it under `contrib/npclient`, credited to uglyDwarf (linuxtrack,
