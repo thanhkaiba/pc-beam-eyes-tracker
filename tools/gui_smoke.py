@@ -70,7 +70,9 @@ def main() -> int:
     def step2():
         st = app.engine.state
         # slow runners: wait for the centre step to finish (3 s countdown + 1 s sampling) instead of a fixed delay
-        if st.calibration in (CalibrationPhase.COUNTDOWN, CalibrationPhase.SAMPLING, CalibrationPhase.IDLE) and time.monotonic() < deadline["t"]:
+        # also wait for the window's 50 ms poll to have moved from the centre step to the tabs
+        if (st.calibration in (CalibrationPhase.COUNTDOWN, CalibrationPhase.SAMPLING, CalibrationPhase.IDLE)
+                or (st.calibration is CalibrationPhase.DONE and not win.tabs.winfo_ismapped())) and time.monotonic() < deadline["t"]:
             win.root.after(200, step2)
             return
         result["log"].append(("calibration", st.calibration.value, st.calibration_message, win.tabs.winfo_ismapped()))
