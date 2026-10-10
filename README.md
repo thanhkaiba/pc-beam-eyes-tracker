@@ -24,7 +24,7 @@ Windows may warn that the file is unsigned: *More info → Run anyway*.
 
 ## Help
 
-Something not working? Open **Advanced → Diagnostics**: each line says what is wrong and has a fix button.
+Something not working? Open **Help → Diagnostics**: each line says what is wrong and has a fix button.
 
 More: [Windows setup](docs/windows-setup.md) · [API](docs/api.md) · [How the game output works](docs/game-output.md) · [Architecture](docs/architecture.md) · [Tests](docs/test-report.md)
 
@@ -34,6 +34,7 @@ More: [Windows setup](docs/windows-setup.md) · [API](docs/api.md) · [How the g
 pip install -r requirements-dev.txt
 python tools/fetch_models.py
 python tools/fetch_opentrack_libs.py
+python tools/fetch_assets.py     # optional: icons and the road photo
 python -m headtrack_pc
 ```
 

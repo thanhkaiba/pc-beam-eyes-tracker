@@ -13,7 +13,10 @@ datas = [
     (os.path.join(root, "headtrack_pc", "models"), os.path.join("headtrack_pc", "models")),
     (os.path.join(root, "headtrack_pc", "libs"), os.path.join("headtrack_pc", "libs")),
 ]
+if os.path.isdir(os.path.join(root, "headtrack_pc", "assets")):   # tools/fetch_assets.py; the app draws a plain cockpit without it
+    datas.append((os.path.join(root, "headtrack_pc", "assets"), os.path.join("headtrack_pc", "assets")))
 datas += collect_data_files("mediapipe")
+datas += collect_data_files("sv_ttk")  # the dark theme (Tcl + images)
 binaries = collect_dynamic_libs("mediapipe")
 
 a = Analysis(
@@ -21,7 +24,7 @@ a = Analysis(
     pathex=[root],
     binaries=binaries,
     datas=datas,
-    hiddenimports=collect_submodules("mediapipe") + ["tkinter", "cv2", "numpy"],
+    hiddenimports=collect_submodules("mediapipe") + ["tkinter", "cv2", "numpy", "sv_ttk"],
     hookspath=[],
     runtime_hooks=[],
     excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "IPython", "jupyter", "notebook", "torch", "tensorflow"],

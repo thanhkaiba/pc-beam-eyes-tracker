@@ -44,6 +44,7 @@ jobs:
         run: |
           python tools/fetch_models.py
           python tools/fetch_opentrack_libs.py
+          python tools/fetch_assets.py
       - name: Unit tests (incl. real NPClient64.dll / freetrackclient64.dll round trip)
         run: python -m unittest discover -s tests -t . -v
       - name: CLI smoke (phone source, game output on)

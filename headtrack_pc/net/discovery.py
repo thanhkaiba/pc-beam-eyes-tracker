@@ -96,4 +96,5 @@ def local_ipv4_addresses() -> list:
             found.insert(0, ip)
     except OSError:
         pass
-    return found
+    # link-local 169.254.x (Tailscale, Bluetooth PAN, unplugged adapters) is never what the phone can reach
+    return [ip for ip in found if not ip.startswith("169.254.")] or found

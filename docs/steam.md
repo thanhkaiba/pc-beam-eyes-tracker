@@ -34,7 +34,7 @@ That folder is the Steam depot content; `HeadTrackPC.exe` is the launch option.
 ## In-app Steamworks integration (`headtrack_pc/steam.py`)
 When `steam_api64.dll` sits next to `HeadTrackPC.exe` (the upload script copies it there) the app
 calls `SteamAPI_RestartAppIfNecessary` (so a launch outside Steam is redirected through Steam),
-`SteamAPI_InitFlat`/`SteamAPI_Init`, shows "Steam connected as <name>" in Advanced → About, pumps
+`SteamAPI_InitFlat`/`SteamAPI_Init`, shows "Steam connected as <name>" in Help (bottom line), pumps
 `SteamAPI_RunCallbacks` every 100 ms (overlay), and calls `SteamAPI_Shutdown` on exit. Without the
 DLL nothing changes. `--no-steam` disables it. For local testing put `steam_appid.txt` with your
 App ID next to the exe; the upload script deletes that file so it never ships.

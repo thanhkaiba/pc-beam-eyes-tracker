@@ -10,29 +10,64 @@ RULE_NAME = "HeadTrack PC"
 
 
 def program_path() -> str:
-    return sys.executable if getattr(sys, "frozen", False) else sys.executable
+    """The executable Windows sees owning the sockets. In a venv `sys.executable` is a launcher
+    stub (.venv/Scripts/python.exe) that starts the base interpreter, so a firewall rule
+    bound to it never matches."""
+    if getattr(sys, "frozen", False):
+        return sys.executable
+    return getattr(sys, "_base_executable", None) or sys.executable
+
+
+def rule_covers(netsh_verbose: str, exe: str) -> bool:
+    """True when the `show rule ... verbose` output holds an enabled rule for `exe` on every
+    profile. Windows marks a home Wi-Fi/Ethernet as Public by default, so a Private-only rule
+    leaves the phone blocked."""
+    rules = []
+    for line in netsh_verbose.splitlines():
+        k, sep, v = line.partition(":")
+        if not sep:
+            continue
+        k = k.strip().lower()
+        if k == "rule name":
+            rules.append({})
+        if rules:
+            rules[-1][k] = v.strip()
+    for fields in rules:
+        if fields.get("enabled", "").lower() != "yes":
+            continue
+        profiles = {x.strip().lower() for x in fields.get("profiles", "").split(",")}
+        if not ({"public", "private"} <= profiles or "any" in profiles):
+            continue
+        if os.path.normcase(os.path.normpath(fields.get("program", ""))) == os.path.normcase(os.path.normpath(exe)):
+            return True
+    return False
 
 
 def firewall_rule_present() -> Optional[bool]:
-    """True/False from `netsh advfirewall firewall show rule`, None off Windows or on error."""
+    """True/False from `netsh advfirewall firewall show rule`, None off Windows or on error.
+    An old rule for another path or for private networks only counts as missing, so the fix runs again."""
     if sys.platform != "win32":
         return None
     try:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        out = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", f"name={RULE_NAME}"],
+        out = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule", f"name={RULE_NAME}", "verbose"],
                              capture_output=True, text=True, timeout=5, creationflags=flags)
-        return out.returncode == 0 and "Rule Name" in out.stdout
+        if out.returncode != 0:
+            return False
+        return rule_covers(out.stdout, program_path())
     except Exception:
         return None
 
 
 def add_firewall_rule() -> str:
-    """Adds inbound UDP 4242/4244 rules for this program, elevated (UAC prompt)."""
+    """Replaces the inbound UDP 4242/4244 rule for this program, elevated (UAC prompt). All profiles:
+    the PC's network is often marked Public, and the rule stays limited to this program and ports."""
     if sys.platform != "win32":
         return "Firewall rules are a Windows feature"
     exe = program_path()
-    cmd = (f'netsh advfirewall firewall add rule name="{RULE_NAME}" dir=in action=allow protocol=UDP localport=4242,4244 '
-           f'program="{exe}" profile=private,domain enable=yes')
+    cmd = (f'netsh advfirewall firewall delete rule name="{RULE_NAME}" & '
+           f'netsh advfirewall firewall add rule name="{RULE_NAME}" dir=in action=allow protocol=UDP localport=4242,4244 '
+           f'program="{exe}" profile=any enable=yes')
     try:
         import ctypes
         r = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f"/c {cmd}", None, 0)  # type: ignore[attr-defined]

@@ -32,7 +32,17 @@ Full text per module: <https://github.com/opentrack/opentrack/blob/master/OPENTR
 `face_landmarker.task` (downloaded by `tools/fetch_models.py`) is part of MediaPipe,
 Copyright Google LLC, Apache License 2.0: <https://www.apache.org/licenses/LICENSE-2.0>.
 
+## Road panorama (CC0)
+
+`road_pano.jpg` (downloaded and cut by `tools/fetch_assets.py`) is "Goegap Road" by Greg Zaal,
+Poly Haven, CC0 1.0 (public domain): <https://polyhaven.com/a/goegap_road>.
+
+## Lucide icons (ISC)
+
+`lucide.ttf` (downloaded by `tools/fetch_assets.py`, licence saved next to it as `LICENSE-lucide.txt`):
+Lucide Contributors, portions Cole Bemis (Feather, MIT). ISC License: <https://lucide.dev/license>.
+
 ## Python packages
 
-mediapipe (Apache 2.0), opencv-python (Apache 2.0), numpy (BSD-3), py7zr (LGPL-2.1, build tool
+mediapipe (Apache 2.0), opencv-python (Apache 2.0), numpy (BSD-3), Pillow (MIT-CMU), sv-ttk (MIT), py7zr (LGPL-2.1, build tool
 only), PyInstaller (GPL with bootloader exception, build tool only).

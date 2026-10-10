@@ -40,6 +40,16 @@ class FTData(ctypes.Structure):
 @unittest.skipUnless(LIBS, "client DLLs not fetched")
 class WindowsFreetrackTest(unittest.TestCase):
     def setUp(self):
+        # FT_SharedMem is one name for the whole session: with HeadTrack PC or opentrack open, these tests
+        # would register a fake game (BeamNG) in that app and fight it over the dummy TrackIR.exe
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenFileMappingW.restype = ctypes.c_void_p
+        k32.OpenFileMappingW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        existing = k32.OpenFileMappingW(0x0004, 0, FT.SHM_NAME)   # FILE_MAP_READ
+        if existing:
+            k32.CloseHandle(existing)
+            self.skipTest("another tracker (HeadTrack PC, opentrack) holds FT_SharedMem: close it to run these tests")
         self.out = FT.FreetrackOutput("both", start_dummy=True)
 
     def tearDown(self):

@@ -1,6 +1,6 @@
 # Local API and streaming overlay
 
-Served by `headtrack_pc/server.py` on `http://127.0.0.1:4245/` (Advanced → Streaming overlay and local API).
+Served by `headtrack_pc/server.py` on `http://127.0.0.1:4245/` (Settings → Streaming overlay and API).
 
 ## `GET /state.json`
 

@@ -8,6 +8,7 @@ if (-not (Test-Path .venv)) { python -m venv .venv }
 pip install -r requirements-dev.txt
 python tools\fetch_models.py
 python tools\fetch_opentrack_libs.py
+python tools\fetch_assets.py
 python -m unittest discover -s tests -t .
 pyinstaller --noconfirm headtrack-pc.spec
 $version = python -c "import headtrack_pc; print(headtrack_pc.__version__)"

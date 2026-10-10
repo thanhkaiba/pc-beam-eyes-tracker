@@ -4,6 +4,9 @@ __pycache__/
 /headtrack_pc/libs/*.dll
 /headtrack_pc/libs/*.exe
 /headtrack_pc/libs/NOTICE.txt
+/headtrack_pc/assets/road_pano.jpg
+/headtrack_pc/assets/lucide.ttf
+/headtrack_pc/assets/LICENSE-lucide.txt
 /build/
 /dist/
 *.spec.bak

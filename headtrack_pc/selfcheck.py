@@ -1,4 +1,4 @@
-"""Live self-check (Advanced → Diagnostics): camera → face → centre → game output → game →
+"""Live self-check (Help → Diagnostics): camera → face → centre → game output → game →
 phone → discovery → firewall, in the order a user fixes things, each row with a plain-words
 detail and, where the app can help, a fix action id handled by `fixes.py`. Pure function."""
 from __future__ import annotations
@@ -115,16 +115,16 @@ def run(i: SelfCheckInput) -> SelfCheckReport:
     elif i.fps >= GOOD_FPS:
         add("rate", "Tracking rate", CheckResult.PASS, f"{i.fps:.0f} fps")
     elif i.fps >= LOW_FPS:
-        add("rate", "Tracking rate", CheckResult.WARN, f"{i.fps:.0f} fps: usable but laggy. Close other camera apps; lower the camera resolution in Advanced → Camera")
+        add("rate", "Tracking rate", CheckResult.WARN, f"{i.fps:.0f} fps: usable but laggy. Close other camera apps; lower the camera resolution in Settings → Camera")
     else:
         add("rate", "Tracking rate", CheckResult.FAIL, f"{i.fps:.0f} fps: too slow. Close other apps using the CPU, or lower the camera resolution")
     # 4. Centre
     if i.has_neutral:
         add("centre", "Centre", CheckResult.PASS, "Centre set: the game receives your head relative to it")
-    elif i.phone_fresh:
+    elif i.phone_fresh or not i.webcam_wanted:
         add("centre", "Centre", CheckResult.SKIP, "The phone sends already-centred poses")
     else:
-        add("centre", "Centre", CheckResult.FAIL, "No centre: the game receives a neutral pose. Track tab → Recalibrate")
+        add("centre", "Centre", CheckResult.FAIL, "No centre: the game receives a neutral pose. Home → Recalibrate")
     # 5. Game output
     if not i.game_output_wanted:
         add("output", "Game output", CheckResult.SKIP if i.udp_output else CheckResult.WARN,
@@ -156,7 +156,7 @@ def run(i: SelfCheckInput) -> SelfCheckReport:
             add("phone", "Phone", CheckResult.PASS, "Phone port open, no phone connected (fine when using the webcam)")
     elif i.phone_status == "Failed":
         perr = i.phone_error or ""
-        add("phone", "Phone", CheckResult.WARN, perr + (" opentrack's UDP input uses the same port: close opentrack, or change the port in Advanced." if "listen" in perr.lower() else ""))
+        add("phone", "Phone", CheckResult.WARN, perr + (" opentrack's UDP input uses the same port: close opentrack, or change the port in the profile." if "listen" in perr.lower() else ""))
     else:
         add("phone", "Phone", CheckResult.SKIP, "Phone receiver off")
     # 8. Discovery

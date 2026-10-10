@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Opens the window with a fake camera, calibrates, visits every tab, presses every Apply, closes.
-Exit code 0 when the centre step completed and the tabs appeared. Needs a display (Xvfb on Linux)."""
+Exit code 0 when the centre step completed and the main window appeared. Needs a display (Xvfb on Linux)."""
 from __future__ import annotations
 
 import os
@@ -17,7 +17,7 @@ from headtrack_pc.engine import CalibrationPhase  # noqa: E402
 from headtrack_pc.gui import HeadTrackWindow  # noqa: E402
 from headtrack_pc.inputs.base import Frame, PoseSource, SourceStatus  # noqa: E402
 from headtrack_pc.pose import HeadPose  # noqa: E402
-from headtrack_pc.profile import DRIVING, OutputSettings, PhoneSettings  # noqa: E402
+from headtrack_pc.profile import DRIVING, OutputSettings, PhoneSettings, SourceKind  # noqa: E402
 
 
 class FakeCam(PoseSource):
@@ -62,6 +62,12 @@ def main() -> int:
     result = {"ok": False, "log": []}
 
     def step1():
+        result["log"].append(("choose", win._stage, win.choose_cam_var.get(), win.choose_phone_var.get()))
+        win._choose(SourceKind.PHONE)
+        win._update_phone_wait(app.engine.state)
+        result["log"].append(("phone", win.phone_title.get(), win.phone_wait_status.get(), win.phone_pc_addr.get()))
+        win._back_to_choice()
+        win._choose(SourceKind.WEBCAM)
         result["log"].append(("status", win.status_var.get(), win.centre_hint.get()))
         app.calibrate()
 
@@ -70,14 +76,14 @@ def main() -> int:
     def step2():
         st = app.engine.state
         # slow runners: wait for the centre step to finish (3 s countdown + 1 s sampling) instead of a fixed delay
-        # also wait for the window's 50 ms poll to have moved from the centre step to the tabs
+        # also wait for the window's 50 ms poll to have moved from the centre step to the main window
         if (st.calibration in (CalibrationPhase.COUNTDOWN, CalibrationPhase.SAMPLING, CalibrationPhase.IDLE)
-                or (st.calibration is CalibrationPhase.DONE and not win.tabs.winfo_ismapped())) and time.monotonic() < deadline["t"]:
+                or (st.calibration is CalibrationPhase.DONE and not win.main.winfo_ismapped())) and time.monotonic() < deadline["t"]:
             win.root.after(200, step2)
             return
-        result["log"].append(("calibration", st.calibration.value, st.calibration_message, win.tabs.winfo_ismapped()))
-        result["ok"] = st.calibration is CalibrationPhase.DONE and bool(win.tabs.winfo_ismapped())
-        win.tabs.select(win.advanced_tab)
+        result["log"].append(("calibration", st.calibration.value, st.calibration_message, win.main.winfo_ismapped()))
+        result["ok"] = st.calibration is CalibrationPhase.DONE and bool(win.main.winfo_ismapped())
+        win.show_page("settings")
         win._apply_tuning(); win._apply_output(); win._apply_camera(); win._apply_name()
         win._apply_preset("flight"); win._apply_recenter(); win._apply_eye(); win._update_checks()
         win.api_port.set("24245"); win._apply_api(); win._apply_mouse(); win._apply_extended(); win._fill_games()
@@ -85,8 +91,8 @@ def main() -> int:
         result["log"].append(("api", win.api_msg.get(), win.games_list.size()))
         app.engine.toggle_pause(); app.engine.run_sync(lambda: None); app.engine.toggle_pause()
         result["log"].append(("tuning", win.tuning_for.get(), win.check_headline.get()))
-        win.tabs.select(win.connect_tab)
-        win.tabs.select(win.track_tab)
+        win.show_page("phone")
+        win.show_page("help"); win.show_page("home")
         win._toggle_sweep()
 
     def step3():
