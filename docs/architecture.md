@@ -30,6 +30,7 @@
 | `engine.py` | worker thread, idle resend, calibration phases, phone-over-webcam policy, `EngineState` for the UI | `app.tracking.TrackingEngine` |
 | `app.py` | builds sources/outputs/discovery from the profile; reacts to profile changes | `AppGraph` + `MainViewModel` |
 | `gui.py` / `cli.py` | Tkinter window (centre step → Track / Connect / Advanced) / console | Compose screens |
+| `anim.py` | time-based easing, pulses, transitions and the scrolling road for the window's light animations (no Tk) | Compose `animate*AsState` / `infiniteTransition` |
 
 Threading: sources push `Frame`s from their threads into the engine queue; the engine thread is
 the only one touching the pipeline and outputs; the UI polls an immutable `EngineState` every

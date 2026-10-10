@@ -3,12 +3,18 @@
   1. Set your centre (every launch)  2. Track: Recenter / Recalibrate, live values, preview
   3. Connect: how the phone finds this PC   4. Advanced: outputs, camera, tuning, diagnostics
 
+Animations are light and time based (`anim.py`): a window fade-in, a breathing status dot, the
+centre screen sliding into the tabs, the cockpit camera gliding to the sent pose over a scrolling
+road, and the eye-calibration dot gliding between points. They run on a ~30 fps timer that only
+redraws what is visible; a slow PC drops frames instead of slowing the motion.
+
 The window never touches the engine thread directly: it reads `engine.state` on a 50 ms timer
 and sends commands (calibrate, recenter, profile updates) that the engine executes itself.
 """
 from __future__ import annotations
 
 import sys
+import time
 import tkinter as tk
 from dataclasses import replace
 from tkinter import ttk
@@ -17,6 +23,7 @@ from typing import Dict, Optional
 import math
 
 from . import __version__
+from . import anim
 from . import protocol
 from . import sim
 from .app import App
@@ -38,6 +45,11 @@ from .selfcheck import CheckResult
 
 POLL_MS = 50
 PREVIEW_MS = 66
+ANIM_MS = 33          # ~30 fps for the light animations (glides, pulses, the scrolling road)
+FADE_SECONDS = 0.25   # window fade-in at launch
+SLIDE_SECONDS = 0.28  # centre screen → tabs
+ROAD_PERIOD = 0.9     # one dash period of the cockpit road, same as the Android app
+ACCENT = "#5af"
 
 
 def _fmt(p: Optional[HeadPose]) -> str:
@@ -63,9 +75,25 @@ class HeadTrackWindow:
         self._last_webcam_error: Optional[str] = None
         self._last_state: Optional[EngineState] = None
         self._axis_vars: Dict[str, Dict[str, tk.Variable]] = {}
+        # animation state: everything time based so a busy PC just drops frames, never speeds up
+        self._anim_last = time.monotonic()
+        self._fade = anim.Transition(FADE_SECONDS)
+        self._fade_armed = False   # alpha is 0 and the fade starts on the first animation tick
+        self._slide = anim.Transition(SLIDE_SECONDS)
+        self._tabs_shown = False
+        self._cam = {k: anim.Eased(0.0, seconds=0.12, snap=1e-4) for k in ("pan_x", "pan_y", "roll", "parallax_x", "parallax_y")}
+        self._cam["zoom"] = anim.Eased(1.0, seconds=0.12, snap=1e-4)
+        self._gaze_dot = (anim.Eased(0.5, seconds=0.1), anim.Eased(0.5, seconds=0.1))
+        self._gaze_seen = False
+        self._centre_fill = anim.Eased(0.0, seconds=0.1)
+        self._cal_dot: Optional[tuple] = None
+        self._cal_last = 0.0
+        self._cal_fade = anim.Transition(0.2)
         self._build()
+        self._start_fade()
         self.root.after(POLL_MS, self._poll)
         self.root.after(PREVIEW_MS, self._preview)
+        self.root.after(ANIM_MS, self._animate)
         if self.steam is not None:
             self.root.after(100, self._steam_callbacks)
 
@@ -77,7 +105,12 @@ class HeadTrackWindow:
     def _build(self) -> None:
         root = self.root
         self.status_var = tk.StringVar(value="Starting…")
-        ttk.Label(root, textvariable=self.status_var, anchor="w", padding=(8, 4)).pack(fill="x")
+        bar = ttk.Frame(root)
+        bar.pack(fill="x")
+        self._frame_bg = self._ttk_background()
+        self.status_dot = tk.Canvas(bar, width=14, height=14, highlightthickness=0, bg=self._frame_bg)
+        self.status_dot.pack(side="left", padx=(8, 0))
+        ttk.Label(bar, textvariable=self.status_var, anchor="w", padding=(6, 4)).pack(side="left", fill="x", expand=True)
 
         self.container = ttk.Frame(root)
         self.container.pack(fill="both", expand=True)
@@ -90,6 +123,17 @@ class HeadTrackWindow:
         self.tabs.add(self.connect_tab, text="Connect")
         self.tabs.add(self.advanced_tab, text="Advanced")
         self.centre_frame.pack(fill="both", expand=True)
+
+    def _ttk_background(self) -> str:
+        """The themed frame colour, so plain Canvas widgets blend in with the ttk frames around them."""
+        try:
+            bg = ttk.Style(self.root).lookup("TFrame", "background")
+            if bg:
+                self.root.winfo_rgb(bg)   # raises for a name this display does not know
+                return bg
+        except tk.TclError:
+            pass
+        return self.root.cget("background")
 
     CAMERA_CHOICES = ["Camera 0 (default)", "Camera 1", "Camera 2", "Camera 3", "Camera 4", "Camera 5"]
 
@@ -123,7 +167,10 @@ class HeadTrackWindow:
             "launch because seat, camera and posture change between sessions.")).pack(pady=(0, 8))
         self._source_row(f).pack(pady=(0, 8))
         self.centre_preview = tk.Label(f, bg="#222", width=48, height=12)
-        self.centre_preview.pack(pady=4)
+        self.centre_preview.pack(pady=(4, 0))
+        # fills left to right during the 3 s countdown, breathes while measuring, empty otherwise
+        self.centre_bar = tk.Canvas(f, width=320, height=4, highlightthickness=0, bg=self._frame_bg)
+        self.centre_bar.pack(pady=(2, 4))
         self.centre_msg = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.centre_msg, foreground="#a33", wraplength=560).pack(pady=4)
         # shown only while the webcam has failed: what went wrong, in plain words, and what to do
@@ -202,32 +249,40 @@ class HeadTrackWindow:
         else:
             self.app.engine.start_sweep()
 
-    def _draw_cockpit(self, st: EngineState) -> None:
-        cam = sim.camera(st.output)
+    def _draw_cockpit(self, st: EngineState, now: float, dt: float) -> None:
+        target = sim.camera(st.output)
+        # the camera glides to the sent pose (120 ms time constant): smooth to watch, still immediate
+        e = self._cam
+        pan_x, pan_y = e["pan_x"].step(target.pan_x, dt), e["pan_y"].step(target.pan_y, dt)
+        roll, zoom = e["roll"].step(target.roll_degrees, dt), e["zoom"].step(target.zoom, dt)
+        parallax_x, parallax_y = e["parallax_x"].step(target.parallax_x, dt), e["parallax_y"].step(target.parallax_y, dt)
         c = self.cockpit
         w, h = 360, 180
         c.delete("all")
-        cx, cy = w / 2 + cam.pan_x * w, h / 2 + cam.pan_y * h
-        ang = math.radians(cam.roll_degrees)
+        cx, cy = w / 2 + pan_x * w, h / 2 + pan_y * h
+        ang = math.radians(roll)
         cos_a, sin_a = math.cos(ang), math.sin(ang)
 
         def rot(x, y):
-            return cx + (x * cos_a - y * sin_a) * cam.zoom, cy + (x * sin_a + y * cos_a) * cam.zoom
+            return cx + (x * cos_a - y * sin_a) * zoom, cy + (x * sin_a + y * cos_a) * zoom
         # far scene: sky/ground split by the horizon, a road converging to the vanishing point
         far = [rot(-700, 0), rot(700, 0), rot(700, 600), rot(-700, 600)]
         c.create_polygon(*[v for p in far for v in p], fill="#5b8c3a", outline="")
+        c.create_oval(*rot(-470, -130), *rot(-410, -70), fill="#fde68a", outline="")   # low sun to the left
         c.create_polygon(*[v for p in [rot(-40, 0), rot(40, 0), rot(360, 600), rot(-360, 600)] for v in p], fill="#555", outline="")
-        c.create_line(*rot(0, 0), *rot(0, 600), fill="#eee", dash=(8, 8), width=2)
+        # centre dashes scroll toward the car so the scene reads as driving (depth t → distance t²)
+        for t0, t1 in anim.road_dashes(anim.cycle(now, ROAD_PERIOD), count=8, length=0.4):
+            c.create_line(*rot(0, 240 * t0 * t0), *rot(0, 240 * t1 * t1), fill="#eee", width=max(1.0, (1 + 4 * t1) * zoom))
         for x in (-220, -120, 120, 220):
             c.create_rectangle(*rot(x - 10, -60), *rot(x + 10, 0), fill="#8a6", outline="")
         # near cockpit (dashboard, pillars, mirrors) moves with parallax and does not roll with the world
-        px, py = cam.parallax_x * w, cam.parallax_y * h
+        px, py = parallax_x * w, parallax_y * h
         c.create_rectangle(0 + px, h * 0.72 + py, w + px, h + py, fill="#2b2b2b", outline="")
         c.create_rectangle(-20 + px, 0 + py, 30 + px, h + py, fill="#1e1e1e", outline="")
         c.create_rectangle(w - 30 + px, 0 + py, w + 20 + px, h + py, fill="#1e1e1e", outline="")
         c.create_rectangle(w * 0.42 + px, 6 + py, w * 0.58 + px, 26 + py, fill="#111", outline="#888")
         c.create_oval(w * 0.3 + px, h * 0.6 + py, w * 0.7 + px, h * 1.3 + py, outline="#777", width=6)
-        self.cockpit_words.set("Looking at: " + cam.words)
+        self.cockpit_words.set("Looking at: " + target.words)
 
     def _build_connect(self, parent) -> ttk.Frame:
         f = ttk.Frame(parent, padding=12)
@@ -514,9 +569,32 @@ class HeadTrackWindow:
         self._show_tabs()
 
     def _show_tabs(self) -> None:
-        if self.centre_frame.winfo_ismapped():
-            self.centre_frame.pack_forget()
-            self.tabs.pack(fill="both", expand=True)
+        """Slide the tabs in from the right over the centre screen, then hand the layout back to pack."""
+        if self._tabs_shown:
+            return
+        self._tabs_shown = True
+        self._slide.start(time.monotonic())
+        self.tabs.place(relx=1.0, rely=0.0, relwidth=1.0, relheight=1.0)
+        self.tabs.lift()
+
+    def _finish_slide(self) -> None:
+        self.tabs.place_forget()
+        self.centre_frame.pack_forget()
+        self.tabs.pack(fill="both", expand=True)
+
+    def _start_fade(self) -> None:
+        """Fade the window in at launch where the platform supports it (Windows, compositing X11, macOS)."""
+        try:
+            self.root.attributes("-alpha", 0.0)
+            self._fade_armed = True
+        except tk.TclError:
+            self._fade_armed = False
+
+    def _set_alpha(self, window, alpha: float) -> None:
+        try:
+            window.attributes("-alpha", max(0.0, min(1.0, alpha)))
+        except tk.TclError:
+            pass
 
     def _apply_name(self) -> None:
         p = self.app.profile
@@ -703,6 +781,11 @@ class HeadTrackWindow:
         c.pack(fill="both", expand=True)
         win.bind("<Escape>", lambda _e: self._end_screen_calibration(cancel=True))
         self._cal_window = (win, c)
+        self._cal_dot = None
+        self._cal_last = time.monotonic()
+        self._cal_fade = anim.Transition(0.2)
+        self._cal_fade.start(self._cal_last)
+        self._set_alpha(win, 0.0)
         self.root.after(50, self._draw_calibration)
 
     def _end_screen_calibration(self, cancel: bool = False) -> None:
@@ -725,23 +808,39 @@ class HeadTrackWindow:
             self._end_screen_calibration()
             return
         w, h = max(1, c.winfo_width()), max(1, c.winfo_height())
+        now = time.monotonic()
+        dt, self._cal_last = min(0.25, now - self._cal_last), now
+        self._set_alpha(win, self._cal_fade.progress(now))
+        if self._cal_dot is None:   # first frame: start on the first point, no glide
+            self._cal_dot = (anim.Eased(st.point[0], seconds=0.12, snap=1e-4), anim.Eased(st.point[1], seconds=0.12, snap=1e-4))
+        ex, ey = self._cal_dot
+        x, y = ex.step(st.point[0], dt) * w, ey.step(st.point[1], dt) * h
         c.delete("all")
-        x, y = st.point[0] * w, st.point[1] * h
-        r = 22 if st.phase == "settle" else 14
-        c.create_oval(x - r - 8, y - r - 8, x + r + 8, y + r + 8, outline="#5af", width=2)
-        c.create_oval(x - r, y - r, x + r, y + r, fill="#5af" if st.phase == "sample" else "#357", outline="")
+        settling = st.phase == "settle"
+        r = 22 if settling else 14
+        ring = r + 8 + (4 * anim.pulse(now, 1.0) if settling else 0)   # breathes while the eyes settle, steady while sampling
+        c.create_oval(x - ring, y - ring, x + ring, y + ring, outline=ACCENT, width=2)
+        c.create_oval(x - r, y - r, x + r, y + r, fill=ACCENT if st.phase == "sample" else "#357", outline="")
         c.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#fff", outline="")
         c.create_arc(x - r - 14, y - r - 14, x + r + 14, y + r + 14, start=90, extent=-360 * st.progress, style="arc", outline="#fff", width=3)
         c.create_text(w / 2, h - 40, fill="#ccc", font=("", 14), text=f"Look at the dot and keep your head still  ·  point {st.index + 1} of {st.total}  ·  Esc cancels")
         self.root.after(33, self._draw_calibration)
 
-    def _draw_gaze_mini(self, st: EngineState) -> None:
+    def _draw_gaze_mini(self, st: EngineState, dt: float) -> None:
         c = self.gaze_mini
         c.delete("all")
         g = st.gaze_point
-        if g is not None:
-            x, y = max(0.0, min(1.0, g.x)) * 96, max(0.0, min(1.0, g.y)) * 54
-            c.create_oval(x - 5, y - 5, x + 5, y + 5, fill="#5af" if g.on_screen else "#a55", outline="")
+        if g is None:
+            self._gaze_seen = False
+            return
+        ex, ey = self._gaze_dot
+        tx, ty = max(0.0, min(1.0, g.x)), max(0.0, min(1.0, g.y))
+        if not self._gaze_seen:   # first point after a gap: appear there, do not glide in from the old spot
+            ex.jump(tx)
+            ey.jump(ty)
+            self._gaze_seen = True
+        x, y = ex.step(tx, dt) * 96, ey.step(ty, dt) * 54
+        c.create_oval(x - 5, y - 5, x + 5, y + 5, fill=ACCENT if g.on_screen else "#a55", outline="")
 
     def _run_fix(self, action: str) -> None:
         self.fix_msg.set(self.app.run_fix(action))
@@ -758,6 +857,85 @@ class HeadTrackWindow:
             self.app.stop()
         finally:
             self.root.destroy()
+
+    # --- animation ---------------------------------------------------------------------------------
+    def _animate(self) -> None:
+        """~30 fps: the few things that move between engine polls. Each part redraws only when visible."""
+        now = time.monotonic()
+        dt, self._anim_last = min(0.25, now - self._anim_last), now
+        try:
+            if self._fade_armed:   # first tick after the window is up, not at construction time
+                self._fade_armed = False
+                self._fade.start(now)
+            if self._fade.started:
+                self._set_alpha(self.root, self._fade.progress(now))
+                if self._fade.finished(now):
+                    self._fade.reset()
+            if self._slide.active(now):
+                self.tabs.place_configure(relx=1.0 - self._slide.progress(now))
+            elif self._slide.started:
+                self._finish_slide()
+                self._slide.reset()
+            st = self._last_state
+            if st is not None:
+                self._draw_status_dot(st, now)
+                if self.centre_bar.winfo_viewable():
+                    self._draw_centre_bar(st, now, dt)
+                if self.cockpit.winfo_viewable():
+                    self._draw_cockpit(st, now, dt)
+                if self.gaze_mini.winfo_viewable():
+                    self._draw_gaze_mini(st, dt)
+        except tk.TclError:
+            pass   # a widget went away while closing
+        except Exception:
+            # never leave the window half faded or the tabs half slid: finish the layout and stop animating
+            import logging
+            logging.getLogger("headtrack").exception("animation stopped")
+            self._fade_armed = False
+            self._set_alpha(self.root, 1.0)
+            if self._slide.started:
+                self._finish_slide()
+                self._slide.reset()
+            return
+        self.root.after(ANIM_MS, self._animate)
+
+    def _draw_status_dot(self, st: EngineState, now: float) -> None:
+        """One dot that says how tracking is: green and breathing while a face is tracked."""
+        live = False
+        if st.phone_fresh:
+            colour, live = "#36c", True
+        elif st.webcam_status is SourceStatus.FAILED or st.output_errors:
+            colour = "#c33"
+        elif st.webcam_status is SourceStatus.STARTING:
+            colour, live = "#c90", True
+        elif st.webcam_status is SourceStatus.RUNNING and st.tracking is TrackingState.TRACKING and not st.paused:
+            colour, live = "#2a2", True
+        elif st.webcam_status is SourceStatus.RUNNING:
+            colour = "#c90"
+        else:
+            colour = "#999"
+        r = 4.0 + (1.5 * anim.pulse(now, 2.0) if live else 0.0)
+        c = self.status_dot
+        c.delete("all")
+        c.create_oval(7 - r, 7 - r, 7 + r, 7 + r, fill=colour, outline="")
+
+    def _draw_centre_bar(self, st: EngineState, now: float, dt: float) -> None:
+        countdown = self.app.profile.calibration.countdown_millis / 1000.0
+        if st.calibration is CalibrationPhase.COUNTDOWN and countdown > 0:
+            target = 1.0 - st.calibration_seconds_left / countdown
+        elif st.calibration is CalibrationPhase.SAMPLING:
+            target = 1.0
+        else:
+            target = 0.0
+        fill = self._centre_fill.step(target, dt)
+        c = self.centre_bar
+        c.delete("all")
+        if fill > 0.0:
+            colour = ACCENT
+            if st.calibration is CalibrationPhase.SAMPLING:
+                shade = int(0x99 + 0x66 * anim.pulse(now, 0.8))   # breathes while the samples are taken
+                colour = f"#55{shade:02x}ff"
+            c.create_rectangle(0, 0, 320 * fill, 4, fill=colour, outline="")
 
     # --- polling ----------------------------------------------------------------------------------
     def _poll(self) -> None:
@@ -835,7 +1013,6 @@ class HeadTrackWindow:
             self.centre_skip.pack_forget()
 
     def _update_track(self, st: EngineState) -> None:
-        self._draw_cockpit(st)
         if st.sweep is not None:
             self.sweep_btn.configure(text="Stop sweep")
             self.sweep_var.set(f"{st.sweep.phase.label}: {st.sweep.phase.expect}  ({st.sweep_progress * 100:.0f} %)")
@@ -848,7 +1025,6 @@ class HeadTrackWindow:
             auto = (auto + "  " if auto else "") + f"Eyes add {st.eye_yaw_degrees:+.0f}° yaw {st.eye_pitch_degrees:+.0f}° pitch"
         self.auto_var.set(auto)
         self.pause_btn.configure(text="Resume tracking (F11)" if st.paused else "Pause tracking (F11)")
-        self._draw_gaze_mini(st)
         self.gaze_var.set(f"Eye tracking: {st.screen_gaze_quality}" + (f"  ({st.gaze_point.x:.2f}, {st.gaze_point.y:.2f})" if st.gaze_point else ""))
         cal = st.screen_calibration
         if cal is not None and cal.phase in ("done", "failed"):
