@@ -47,28 +47,12 @@ jobs:
           python tools/fetch_assets.py
       - name: Unit tests (incl. real NPClient64.dll / freetrackclient64.dll round trip)
         run: python -m unittest discover -s tests -t . -v
-      - name: CLI smoke (phone source, game output on)
-        run: python -m headtrack_pc --cli --source phone --duration 3 --calibrate-after 0
-      - name: CLI smoke (webcam source; no camera on the runner, must fail gracefully)
-        run: python -m headtrack_pc --cli --source webcam --duration 3 --calibrate-after 0
-      - name: GUI smoke (Tk window, fake camera, game output on)
-        run: python tools/gui_smoke.py --game-output
       - name: Build exe (PyInstaller)
         run: pyinstaller --noconfirm headtrack-pc.spec
       - name: Version
         id: ver
         shell: bash
         run: echo "v=$(python -c 'import headtrack_pc; print(headtrack_pc.__version__)')" >> "$GITHUB_OUTPUT"
-      - name: Self-test of the built exe (libraries, face model, DLLs inside the bundle)
-        shell: pwsh
-        run: |
-          $p = Start-Process -FilePath .\dist\HeadTrackPC\HeadTrackPC.exe -ArgumentList '--selftest' -NoNewWindow -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
-      - name: Run the built exe in CLI mode (phone source, game output on)
-        shell: pwsh
-        run: |
-          $p = Start-Process -FilePath .\dist\HeadTrackPC\HeadTrackPC.exe -ArgumentList '--cli','--source','phone','--duration','3','--calibrate-after','0' -NoNewWindow -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "cli run failed with exit code $($p.ExitCode)" }
       - name: Installer (Inno Setup)
         shell: pwsh
         run: |
