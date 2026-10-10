@@ -6,4 +6,4 @@ webcam tracker, a receiver for the phone's packets, and a freetrack / TrackIR ou
 separate opentrack installation is needed.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"

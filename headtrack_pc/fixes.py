@@ -1,6 +1,7 @@
 """Fix actions behind the Diagnostics rows. Each returns a short message for the UI."""
 from __future__ import annotations
 
+import ntpath
 import os
 import subprocess
 import sys
@@ -38,7 +39,8 @@ def rule_covers(netsh_verbose: str, exe: str) -> bool:
         profiles = {x.strip().lower() for x in fields.get("profiles", "").split(",")}
         if not ({"public", "private"} <= profiles or "any" in profiles):
             continue
-        if os.path.normcase(os.path.normpath(fields.get("program", ""))) == os.path.normcase(os.path.normpath(exe)):
+        # netsh always reports Windows paths: compare them the Windows way on every OS.
+        if ntpath.normcase(ntpath.normpath(fields.get("program", ""))) == ntpath.normcase(ntpath.normpath(exe)):
             return True
     return False
 
