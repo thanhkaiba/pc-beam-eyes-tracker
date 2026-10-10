@@ -74,20 +74,24 @@ Honest gaps: Beam's eye model is tuned on far more data than a MediaPipe iris fi
 more jitter and a larger error here, especially with a 720p webcam in poor light. Nothing has
 been measured on a real webcam yet (`docs/test-report.md`).
 
-## Install (Windows): download the exe, no Python needed
+## Install (Windows): one file, nothing else to install
 
-1. **Releases** page of this repo → latest release → `HeadTrackPC-vX.Y.Z-windows.zip` (~115 MB).
-   Unzip anywhere, run `HeadTrackPC.exe`. Everything is inside (Python runtime, MediaPipe model,
-   opentrack client DLLs); nothing is installed system-wide and no internet is needed afterwards.
-2. Windows SmartScreen may warn the first time because the exe is not code-signed:
-   *More info → Run anyway*. `HeadTrackPC-console.exe --cli` is the same program with a console
-   (angles printed, errors visible).
-3. No release yet or want the newest commit: **Actions → `windows` → latest green run →
-   Artifacts → `HeadTrackPC-windows`** (same zip; GitHub login required, kept 90 days).
+1. **Releases** page of this repo → latest release → `HeadTrackPC-X.Y.Z-Setup.exe`. Run it: it
+   installs for the current user (no admin prompt), adds a Start menu entry and, if you tick it,
+   a desktop icon, then starts the program. Prefer no installer? `HeadTrackPC-X.Y.Z-portable.zip`:
+   unzip anywhere, run `HeadTrackPC.exe`.
+2. Everything is inside (runtime, MediaPipe face model, opentrack client DLLs); no Python, no pip,
+   no internet needed afterwards. Windows SmartScreen may warn the first time because the files
+   are not code-signed: *More info → Run anyway*.
+3. The window opens on **Set your centre**: pick *Webcam* (and which camera) or *Phone*, sit as
+   you play, press *Calibrate centre*. If the camera fails, the screen says why and offers
+   *Try again*, *Use the phone instead* and the Windows camera settings.
 
-The zip is built by `.github/workflows/windows.yml` on every push (PyInstaller on a Windows runner,
-after the tests, a CLI smoke, a Tk smoke and a run of the built exe). Pushing a tag `vX.Y.Z`
-(or *Run workflow* with a tag name) publishes that same zip as a GitHub Release.
+No release yet or want the newest commit: **Actions → `windows` → latest green run → Artifacts →
+`HeadTrackPC-windows`** (same two files; GitHub login required, kept 90 days). The files are built by
+`.github/workflows/windows.yml` on every push: tests, PyInstaller on a Windows runner, a self-test of
+the built exe (`HeadTrackPC.exe --selftest`: libraries, face model and DLLs inside the bundle), Inno
+Setup. Pushing a tag `X.Y.Z` (or *Run workflow* with a tag name) publishes them as a GitHub Release.
 
 ## From source (developers, Python 3.10–3.13)
 
@@ -101,9 +105,10 @@ python -m unittest discover -s tests -t .
 python -m headtrack_pc                 # the window;  python -m headtrack_pc --cli  for a console view
 ```
 
-`scripts\build.ps1` does all of the above and builds `dist\HeadTrackPC\HeadTrackPC.exe` (window) and
-`HeadTrackPC-console.exe` (console, for `--cli`) with PyInstaller, the same as the workflow. On Linux/macOS
-everything but the game output works (useful for development and for the UDP output to an opentrack).
+`scripts\build.ps1` does all of the above and builds the portable folder, the zip and (with Inno Setup 6
+installed) the Setup.exe, the same as the workflow. The built `HeadTrackPC.exe` is a windowed program;
+`HeadTrackPC.exe --cli`, `--selftest` and `--version` print to the terminal they were started from. On
+Linux/macOS everything but the game output works (useful for development and for the UDP output to an opentrack).
 
 ## Use
 

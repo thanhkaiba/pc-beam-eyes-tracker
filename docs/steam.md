@@ -2,7 +2,7 @@
 
 ## What the repository produces
 `.github/workflows/windows.yml` (or `scripts\build.ps1`) gives `dist\HeadTrackPC\`: a self-contained
-folder with `HeadTrackPC.exe` (window), `HeadTrackPC-console.exe` (`--cli`, visible errors), the
+folder with `HeadTrackPC.exe` (window; `--cli` / `--selftest` print to the console they were started from), the
 MediaPipe model, the client DLLs and the game table. No Python install is needed on the player's PC.
 That folder is the Steam depot content; `HeadTrackPC.exe` is the launch option.
 

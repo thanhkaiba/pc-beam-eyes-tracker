@@ -1,9 +1,9 @@
 name: windows
 
-# Every push builds HeadTrackPC-windows.zip and keeps it as a run artifact (GitHub login needed,
-# expires after 90 days). A tag `vX.Y.Z` or `X.Y.Z` (or "Run workflow" with a tag name) also
-# publishes the same zip on the Releases page, where anyone can download it without an account.
-# A release created by hand on GitHub pushes its tag, so it gets the zip too.
+# Every push builds the installer and the portable zip and keeps them as a run artifact (GitHub
+# login needed, expires after 90 days). A tag `vX.Y.Z` or `X.Y.Z` (or "Run workflow" with a tag
+# name) also publishes both on the Releases page, where anyone can download them without an
+# account. A release created by hand on GitHub pushes its tag, so it gets the files too.
 on:
   push:
     branches: ["**"]
@@ -54,16 +54,33 @@ jobs:
         run: python tools/gui_smoke.py --game-output
       - name: Build exe (PyInstaller)
         run: pyinstaller --noconfirm headtrack-pc.spec
-      - name: Run the built exe
+      - name: Version
+        id: ver
+        shell: bash
+        run: echo "v=$(python -c 'import headtrack_pc; print(headtrack_pc.__version__)')" >> "$GITHUB_OUTPUT"
+      - name: Self-test of the built exe (libraries, face model, DLLs inside the bundle)
+        shell: pwsh
         run: |
-          .\dist\HeadTrackPC\HeadTrackPC-console.exe --version
-          .\dist\HeadTrackPC\HeadTrackPC-console.exe --cli --source phone --duration 3 --calibrate-after 0
-      - name: Package
-        run: Compress-Archive -Path dist\HeadTrackPC -DestinationPath HeadTrackPC-windows.zip
+          $p = Start-Process -FilePath .\dist\HeadTrackPC\HeadTrackPC.exe -ArgumentList '--selftest' -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+      - name: Run the built exe in CLI mode (phone source, game output on)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath .\dist\HeadTrackPC\HeadTrackPC.exe -ArgumentList '--cli','--source','phone','--duration','3','--calibrate-after','0' -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "cli run failed with exit code $($p.ExitCode)" }
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.ver.outputs.v }} installer\HeadTrackPC.iss
+          Get-Item dist\HeadTrackPC-${{ steps.ver.outputs.v }}-Setup.exe
+      - name: Portable zip
+        run: Compress-Archive -Path dist\HeadTrackPC -DestinationPath dist\HeadTrackPC-${{ steps.ver.outputs.v }}-portable.zip
       - uses: actions/upload-artifact@v4
         with:
           name: HeadTrackPC-windows
-          path: HeadTrackPC-windows.zip
+          path: |
+            dist/HeadTrackPC-${{ steps.ver.outputs.v }}-Setup.exe
+            dist/HeadTrackPC-${{ steps.ver.outputs.v }}-portable.zip
       - name: Release tag
         id: tag
         shell: bash
@@ -73,10 +90,6 @@ jobs:
           elif [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
             echo "name=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
           fi
-      - name: Publish GitHub Release (tag push or manual run with a tag)
-        if: steps.tag.outputs.name != ''
-        shell: bash
-        run: cp HeadTrackPC-windows.zip "HeadTrackPC-${{ steps.tag.outputs.name }}-windows.zip"
       - uses: softprops/action-gh-release@v2
         if: steps.tag.outputs.name != ''
         with:
@@ -85,7 +98,11 @@ jobs:
           name: HeadTrack PC ${{ steps.tag.outputs.name }}
           generate_release_notes: true
           body: |
-            Windows build (no Python needed): download `HeadTrackPC-${{ steps.tag.outputs.name }}-windows.zip`,
-            unzip, run `HeadTrackPC.exe`. Windows SmartScreen may warn because the exe is not
-            code-signed: *More info → Run anyway*. `HeadTrackPC-console.exe --cli` shows the angles in a console.
-          files: HeadTrackPC-${{ steps.tag.outputs.name }}-windows.zip
+            **Windows, nothing else to install.**
+            - `HeadTrackPC-${{ steps.ver.outputs.v }}-Setup.exe`: installer (per user, no admin needed), Start menu + optional desktop shortcut.
+            - `HeadTrackPC-${{ steps.ver.outputs.v }}-portable.zip`: unzip anywhere and run `HeadTrackPC.exe`.
+
+            Windows SmartScreen may warn the first time because the files are not code-signed: *More info → Run anyway*.
+          files: |
+            dist/HeadTrackPC-${{ steps.ver.outputs.v }}-Setup.exe
+            dist/HeadTrackPC-${{ steps.ver.outputs.v }}-portable.zip

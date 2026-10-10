@@ -52,7 +52,7 @@ class HeadTrackWindow:
         self.steam = steam
         self.root = tk.Tk()
         self.root.title(f"HeadTrack PC {__version__}")
-        self.root.minsize(640, 520)
+        self.root.minsize(720, 600)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._preview_image = None
         self._cal_window = None
@@ -60,6 +60,7 @@ class HeadTrackWindow:
         self._last_tuning_label = ""
         self._last_check_time = 0.0
         self._centre_done = False
+        self._last_webcam_error: Optional[str] = None
         self._last_state: Optional[EngineState] = None
         self._axis_vars: Dict[str, Dict[str, tk.Variable]] = {}
         self._build()
@@ -90,25 +91,67 @@ class HeadTrackWindow:
         self.tabs.add(self.advanced_tab, text="Advanced")
         self.centre_frame.pack(fill="both", expand=True)
 
+    CAMERA_CHOICES = ["Camera 0 (default)", "Camera 1", "Camera 2", "Camera 3", "Camera 4", "Camera 5"]
+
+    def _camera_label(self, index: int) -> str:
+        return self.CAMERA_CHOICES[index] if 0 <= index < len(self.CAMERA_CHOICES) else f"Camera {index}"
+
+    def _camera_index(self) -> int:
+        try:
+            return int(self.cam_label.get().split()[1])
+        except (IndexError, ValueError):
+            return 0
+
+    def _source_row(self, parent) -> ttk.Frame:
+        """Webcam / phone choice with the camera picker; used on the centre screen and in Advanced."""
+        row = ttk.Frame(parent)
+        ttk.Label(row, text="Track with:").pack(side="left")
+        ttk.Radiobutton(row, text="Webcam", value="webcam", variable=self.source_var, command=self._apply_camera).pack(side="left", padx=(6, 2))
+        ttk.Combobox(row, textvariable=self.cam_label, values=self.CAMERA_CHOICES, width=18, state="readonly").pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(row, text="Phone (HeadTrack Android app)", value="phone", variable=self.source_var, command=self._apply_camera).pack(side="left", padx=2)
+        return row
+
     def _build_centre(self, parent) -> ttk.Frame:
+        p = self.app.profile
+        self.source_var = tk.StringVar(value=p.source.value)
+        self.cam_label = tk.StringVar(value=self._camera_label(p.camera.index))
+        self.cam_label.trace_add("write", lambda *_: self._apply_camera())
         f = ttk.Frame(parent, padding=24)
         ttk.Label(f, text="Set your centre", font=("", 18, "bold")).pack(pady=(10, 4))
         ttk.Label(f, wraplength=560, justify="center", text=(
             "Sit as you play, look straight at the screen and hold still. The centre is set again every "
-            "launch because seat, camera and posture change between sessions.")).pack(pady=(0, 12))
+            "launch because seat, camera and posture change between sessions.")).pack(pady=(0, 8))
+        self._source_row(f).pack(pady=(0, 8))
         self.centre_preview = tk.Label(f, bg="#222", width=48, height=12)
         self.centre_preview.pack(pady=4)
         self.centre_msg = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.centre_msg, foreground="#a33", wraplength=560).pack(pady=4)
+        # shown only while the webcam has failed: what went wrong, in plain words, and what to do
+        self.centre_problem = ttk.LabelFrame(f, text="The webcam is not working", padding=8)
+        self.centre_problem_var = tk.StringVar(value="")
+        ttk.Label(self.centre_problem, textvariable=self.centre_problem_var, foreground="#a33", wraplength=540, justify="left").pack(anchor="w")
+        prow = ttk.Frame(self.centre_problem)
+        prow.pack(anchor="w", pady=(6, 0))
+        ttk.Button(prow, text="Try the camera again", command=self._retry_camera).pack(side="left", padx=(0, 6))
+        ttk.Button(prow, text="Use the phone instead", command=self._use_phone).pack(side="left", padx=(0, 6))
+        ttk.Button(prow, text="Open Windows camera settings", command=lambda: self._run_fix("camera_privacy")).pack(side="left")
         row = ttk.Frame(f)
         row.pack(pady=8)
         self.centre_btn = ttk.Button(row, text="Calibrate centre (3 s)", command=self.app.calibrate)
         self.centre_btn.pack(side="left", padx=6)
         ttk.Button(row, text="Use instant centre", command=self.app.recenter).pack(side="left", padx=6)
-        self.centre_skip = ttk.Button(row, text="Skip: the phone is tracking", command=self._skip_centre)
+        self.centre_skip = ttk.Button(row, text="Continue: the phone sets the centre", command=self._skip_centre)
         self.centre_hint = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.centre_hint, foreground="#666", wraplength=560, justify="center").pack(pady=4)
         return f
+
+    def _retry_camera(self) -> None:
+        self.centre_problem_var.set("Restarting the camera…")
+        self._run_fix("retry_camera")
+
+    def _use_phone(self) -> None:
+        self.source_var.set("phone")
+        self._apply_camera()
 
     def _build_track(self, parent) -> ttk.Frame:
         f = ttk.Frame(parent, padding=12)
@@ -255,20 +298,14 @@ class HeadTrackWindow:
         # Camera
         box = ttk.LabelFrame(f, text="Camera", padding=8)
         box.pack(fill="x", pady=4)
-        row = ttk.Frame(box)
-        row.pack(anchor="w")
-        ttk.Label(row, text="Source:").pack(side="left")
-        self.source_var = tk.StringVar(value=p.source.value)
-        ttk.Radiobutton(row, text="Webcam (+ phone when it sends)", value="webcam", variable=self.source_var, command=self._apply_camera).pack(side="left", padx=4)
-        ttk.Radiobutton(row, text="Phone only", value="phone", variable=self.source_var, command=self._apply_camera).pack(side="left", padx=4)
+        self._source_row(box).pack(anchor="w")
+        ttk.Label(box, foreground="#666", wraplength=560, justify="left", text=(
+            "Webcam: the phone takes over whenever it sends and the webcam resumes when it stops. "
+            "Phone: the webcam stays off.")).pack(anchor="w", pady=(0, 2))
         row = ttk.Frame(box)
         row.pack(anchor="w", pady=2)
-        ttk.Label(row, text="Webcam index:").pack(side="left")
-        self.cam_index = tk.StringVar(value=str(p.camera.index))
-        ttk.Spinbox(row, from_=0, to=9, textvariable=self.cam_index, width=4).pack(side="left", padx=4)
         self.mirror_var = tk.BooleanVar(value=p.camera.mirrored)
-        ttk.Checkbutton(row, text="Camera image is mirrored (flip yaw/roll/x)", variable=self.mirror_var).pack(side="left", padx=8)
-        ttk.Button(row, text="Apply", command=self._apply_camera).pack(side="left", padx=4)
+        ttk.Checkbutton(row, text="Camera image is mirrored (flip yaw/roll/x)", variable=self.mirror_var, command=self._apply_camera).pack(side="left")
 
         # Tuning
         box = ttk.LabelFrame(f, text="Tuning (same meaning as the Android app)", padding=8)
@@ -502,12 +539,10 @@ class HeadTrackWindow:
 
     def _apply_camera(self) -> None:
         p = self.app.profile
-        try:
-            idx = int(self.cam_index.get())
-        except ValueError:
-            idx = 0
-        self.app.update_profile(replace(p, source=SourceKind(self.source_var.get()),
-                                        camera=replace(p.camera, index=idx, mirrored=bool(self.mirror_var.get()))))
+        mirrored = bool(self.mirror_var.get()) if hasattr(self, "mirror_var") else p.camera.mirrored
+        new = replace(p, source=SourceKind(self.source_var.get()), camera=replace(p.camera, index=self._camera_index(), mirrored=mirrored))
+        if new != p:
+            self.app.update_profile(new)
 
     def _apply_tuning(self) -> None:
         p = self.app.profile
@@ -774,13 +809,26 @@ class HeadTrackWindow:
             return
         else:
             self.centre_btn.configure(text="Calibrate centre (3 s)", state="normal")
-        if st.webcam_status is SourceStatus.FAILED:
-            self.centre_hint.set(st.webcam_error or "")
+        phone_mode = self.app.profile.source is SourceKind.PHONE
+        failed = st.webcam_status is SourceStatus.FAILED and not phone_mode
+        if failed:
+            if not self.centre_problem_var.get().startswith("Restarting") or st.webcam_error != self._last_webcam_error:
+                self.centre_problem_var.set(st.webcam_error or "The camera could not be started.")
+            if not self.centre_problem.winfo_ismapped():
+                self.centre_problem.pack(fill="x", pady=4, before=self.centre_btn.master)
+        elif self.centre_problem.winfo_ismapped():
+            self.centre_problem.pack_forget()
+        self._last_webcam_error = st.webcam_error
+        if phone_mode:
+            self.centre_hint.set("Phone mode: open the HeadTrack app on the phone, find this PC and connect. "
+                                 + ("The phone is sending: press Continue." if st.phone_fresh else "Waiting for the phone…"))
+        elif failed:
+            self.centre_hint.set("Fix the camera above, or switch to the phone.")
         elif st.raw is None:
             self.centre_hint.set("Waiting for a face in the webcam…" if st.webcam_status is SourceStatus.RUNNING else "Starting the webcam…")
         else:
             self.centre_hint.set("Face tracked. Press Calibrate centre when you sit as you play.")
-        if st.phone_fresh or self.app.profile.source is SourceKind.PHONE:
+        if st.phone_fresh or phone_mode:
             if not self.centre_skip.winfo_ismapped():
                 self.centre_skip.pack(side="left", padx=6)
         elif self.centre_skip.winfo_ismapped():

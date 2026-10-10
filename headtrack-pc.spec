@@ -1,7 +1,9 @@
-# PyInstaller spec: `pyinstaller headtrack-pc.spec` → dist/HeadTrackPC/ with
-#   HeadTrackPC.exe          the window (no console)
-#   HeadTrackPC-console.exe  same program with a console, for --cli and for seeing errors
+# PyInstaller spec: `pyinstaller headtrack-pc.spec` → dist/HeadTrackPC/HeadTrackPC.exe, one
+# windowed exe. `HeadTrackPC.exe --cli` / `--selftest` / `--version` attach to the console they
+# were started from (launcher.py), so no second console exe is needed.
 # Run tools/fetch_models.py and tools/fetch_opentrack_libs.py first.
+# Do NOT exclude matplotlib or PIL: `import mediapipe` imports both (drawing_utils); excluding
+# them made the frozen app report "MediaPipe is not installed".
 import os
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
@@ -22,9 +24,10 @@ a = Analysis(
     hiddenimports=collect_submodules("mediapipe") + ["tkinter", "cv2", "numpy"],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["matplotlib", "PyQt5", "PyQt6", "PySide2", "PySide6", "IPython", "jupyter", "notebook", "torch", "tensorflow"],
+    excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "IPython", "jupyter", "notebook", "torch", "tensorflow"],
 )
 pyz = PYZ(a.pure)
-exe_gui = EXE(pyz, a.scripts, [], exclude_binaries=True, name="HeadTrackPC", console=False)
-exe_cli = EXE(pyz, a.scripts, [], exclude_binaries=True, name="HeadTrackPC-console", console=True)
-coll = COLLECT(exe_gui, exe_cli, a.binaries, a.datas, strip=False, upx=False, name="HeadTrackPC")
+icon = os.path.join(root, "installer", "headtrack.ico")
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="HeadTrackPC", console=False,
+          icon=icon if os.path.isfile(icon) else None)
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="HeadTrackPC")

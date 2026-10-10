@@ -22,6 +22,13 @@ MODEL_FILE = "face_landmarker.task"
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 
 
+def _missing(what: str, package: str, e: Exception) -> str:
+    """A packaged app must never tell the user to pip-install: that is a build defect."""
+    if getattr(sys, "frozen", False):
+        return f"{what} could not be loaded from this installation ({e}). Reinstall HeadTrack PC; if it persists, report this message."
+    return f"{what} is not installed (pip install {package}): {e}"
+
+
 def default_model_path() -> str:
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     candidates = [os.path.join(here, "models", MODEL_FILE)]
@@ -81,16 +88,16 @@ class WebcamSource(PoseSource):
     def _run(self) -> None:
         try:
             import cv2  # noqa: WPS433
-        except ImportError:
-            return self._fail("OpenCV (opencv-python) is not installed")
+        except ImportError as e:
+            return self._fail(_missing("OpenCV", "opencv-python", e))
         if not os.path.isfile(self.model_path):
             return self._fail(f"Face model not found: {self.model_path}. Run `python tools/fetch_models.py`.")
         try:
             import mediapipe as mp
             from mediapipe.tasks import python as mp_python
             from mediapipe.tasks.python import vision
-        except ImportError:
-            return self._fail("MediaPipe is not installed (pip install mediapipe)")
+        except ImportError as e:
+            return self._fail(_missing("MediaPipe", "mediapipe", e))
 
         s = self.settings
         backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
