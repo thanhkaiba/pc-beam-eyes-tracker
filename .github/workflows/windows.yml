@@ -1,17 +1,18 @@
 name: windows
 
 # Every push builds HeadTrackPC-windows.zip and keeps it as a run artifact (GitHub login needed,
-# expires after 90 days). A tag `vX.Y.Z` (or "Run workflow" with a tag name) also publishes the
-# same zip on the Releases page, where anyone can download it without an account.
+# expires after 90 days). A tag `vX.Y.Z` or `X.Y.Z` (or "Run workflow" with a tag name) also
+# publishes the same zip on the Releases page, where anyone can download it without an account.
+# A release created by hand on GitHub pushes its tag, so it gets the zip too.
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
+    tags: ["v*", "[0-9]*"]
   pull_request:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Publish a GitHub Release with this tag (e.g. v0.1.0); empty = build only"
+        description: "Publish a GitHub Release with this tag (e.g. v1.0.0 or 1.0.0); empty = build only"
         required: false
         default: ""
 
@@ -67,12 +68,12 @@ jobs:
         id: tag
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           elif [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
             echo "name=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
           fi
-      - name: Publish GitHub Release (tags v* or manual run with a tag)
+      - name: Publish GitHub Release (tag push or manual run with a tag)
         if: steps.tag.outputs.name != ''
         shell: bash
         run: cp HeadTrackPC-windows.zip "HeadTrackPC-${{ steps.tag.outputs.name }}-windows.zip"
@@ -80,6 +81,7 @@ jobs:
         if: steps.tag.outputs.name != ''
         with:
           tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
           name: HeadTrack PC ${{ steps.tag.outputs.name }}
           generate_release_notes: true
           body: |

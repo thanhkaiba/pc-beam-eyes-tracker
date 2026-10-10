@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "headtrack-pc"
-version = "0.1.0"
+version = "1.0.0"
 description = "Webcam or phone head tracking that feeds Windows games directly (freetrack/TrackIR), no opentrack needed"
 readme = "README.md"
 license = {file = "LICENSE"}
