@@ -74,7 +74,22 @@ Honest gaps: Beam's eye model is tuned on far more data than a MediaPipe iris fi
 more jitter and a larger error here, especially with a 720p webcam in poor light. Nothing has
 been measured on a real webcam yet (`docs/test-report.md`).
 
-## Install (Windows, Python 3.10–3.13)
+## Install (Windows): download the exe, no Python needed
+
+1. **Releases** page of this repo → latest release → `HeadTrackPC-vX.Y.Z-windows.zip` (~115 MB).
+   Unzip anywhere, run `HeadTrackPC.exe`. Everything is inside (Python runtime, MediaPipe model,
+   opentrack client DLLs); nothing is installed system-wide and no internet is needed afterwards.
+2. Windows SmartScreen may warn the first time because the exe is not code-signed:
+   *More info → Run anyway*. `HeadTrackPC-console.exe --cli` is the same program with a console
+   (angles printed, errors visible).
+3. No release yet or want the newest commit: **Actions → `windows` → latest green run →
+   Artifacts → `HeadTrackPC-windows`** (same zip; GitHub login required, kept 90 days).
+
+The zip is built by `.github/workflows/windows.yml` on every push (PyInstaller on a Windows runner,
+after the tests, a CLI smoke, a Tk smoke and a run of the built exe). Pushing a tag `vX.Y.Z`
+(or *Run workflow* with a tag name) publishes that same zip as a GitHub Release.
+
+## From source (developers, Python 3.10–3.13)
 
 ```powershell
 git clone <this repo> && cd pc-beam-eyes-tracker
@@ -87,10 +102,8 @@ python -m headtrack_pc                 # the window;  python -m headtrack_pc --c
 ```
 
 `scripts\build.ps1` does all of the above and builds `dist\HeadTrackPC\HeadTrackPC.exe` (window) and
-`HeadTrackPC-console.exe` (console, for `--cli`) with PyInstaller. The GitHub Actions workflow
-`.github/workflows/windows.yml` runs the same on a Windows runner, including a round trip through
-the real `NPClient64.dll` / `freetrackclient64.dll`, and uploads `HeadTrackPC-windows.zip`. On Linux/macOS everything but the game output works (useful for development and for
-the UDP output to an opentrack).
+`HeadTrackPC-console.exe` (console, for `--cli`) with PyInstaller, the same as the workflow. On Linux/macOS
+everything but the game output works (useful for development and for the UDP output to an opentrack).
 
 ## Use
 
