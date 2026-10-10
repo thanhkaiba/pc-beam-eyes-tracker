@@ -1,7 +1,10 @@
 # Windows set-up and first checks
 
 ## Install
-See README "Install". The fetch scripts need internet once; after that nothing does.
+Download `HeadTrackPC-vX.Y.Z-windows.zip` from the Releases page (or the `HeadTrackPC-windows`
+artifact of the latest green `windows` Actions run), unzip, run `HeadTrackPC.exe`; no Python
+and no internet needed. Developers: README "From source"; the fetch scripts need internet once.
+Below, `python -m headtrack_pc --cli` and `HeadTrackPC-console.exe --cli` are interchangeable.
 
 ## Check 1 — webcam tracking (no game)
 `python -m headtrack_pc --cli` → after 2 s it calibrates by itself; the `raw=` angles must follow
